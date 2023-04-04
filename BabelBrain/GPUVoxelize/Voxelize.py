@@ -483,7 +483,8 @@ def Voxelize(inputMesh,targetResolution=1333/500e3/6*0.75*1e3,GPUBackend='OpenCL
                 options=('-I',os.path.join(os.getenv('CUDA_PATH'),'Library','Include'),
                          '-I',str(resource_path()))
             else:
-                options=('-I',str(resource_path()))
+                options=('-I',os.path.join(os.getenv('BABEL_CUDA_PATH'),'include'),
+                         '-I',str(resource_path()))
             prgcl  = clp.RawModule(code= "#define _CUDA\n"+_SCode_p1+SCode_p2+_SCode_p3,
                                  options=options)
             knl=prgcl.get_function("voxelize_triangle_solid")
