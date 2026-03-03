@@ -29,7 +29,7 @@ dependencies:
   - pip:
       - altgraph==0.17.4
       - babel==2.17.0
-      - babelviscofdtd==1.2.1
+      - babelviscofdtd==1.2.3
       - backrefs==5.9
       - certifi==2025.10.5
       - charset-normalizer==3.4.4
@@ -125,7 +125,7 @@ dependencies:
       - superqt==0.7.6
       - threadpoolctl==3.6.0
       - tifffile==2025.10.16
-      - trimesh==4.9.0
+      - trimesh==4.7.3
       - typing-extensions==4.15.0
       - tzdata==2025.2
       - uhi==1.0.0
