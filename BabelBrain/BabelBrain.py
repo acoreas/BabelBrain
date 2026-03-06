@@ -1268,9 +1268,7 @@ class RunMaskGeneration(QObject):
                                                     'bForceNoAbsorptionSkullScalp',
                                                     'TxOptimizedWeights',
                                                     'PlanTUSRoot',
-                                                     'FSLRoot',
-                                                     'ConnectomeRoot',
-                                                     'FreeSurferRoot']:
+                                                     'ConnectomeRoot']:
                 return True
             else:
                 return False
