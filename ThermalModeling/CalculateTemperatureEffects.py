@@ -263,6 +263,7 @@ def RunBHTECycles(nCurrent,
                     TemperaturePoints,
                     FinalTemp,
                     FinalDose,
+                    PreviousData,
                     bRunInSubProcess=False,
                     ):
     '''
@@ -316,9 +317,10 @@ def RunBHTECycles(nCurrent,
         Final temperature array.
     FinalDose : np.ndarray
         Final dose array.
+    PreviousData: dict or None
+        Previous data used to concatenate results
     bRunInSubProcess : bool, optional
         If True, run in subprocess.
-
     Returns
     -------
     tuple
@@ -333,8 +335,14 @@ def RunBHTECycles(nCurrent,
             initT0=FinalTemp
             initDose=FinalDose
         else:
-            initT0=None
-            initDose=None
+            if PreviousData is not None:
+                print('Starting thermal simulation with previous results')
+                initT0=np.ascontiguousarray(PreviousData['FinalTemp'])
+                initDose=np.ascontiguousarray(PreviousData['FinalDose'])
+                print('MaxT0',initT0.max())
+            else:
+                initT0=None
+                initDose=None
             
         if type(InputPData) is str:
             ResTemp,ResDose,MonitorSlice,Qarr,TemperaturePointsOn=BHTE(PMaps,
@@ -436,7 +444,7 @@ def RunInProcess(queueResult,Backend,deviceName,queueMsg,
                  nStepsOn,cy,nFactorMonitoring,dt,
                  DutyCycle,MonitoringPointsMap,
                  TemperaturePoints,stableTemp,
-                 FinalTemp,FinalDose,
+                 FinalTemp,FinalDose,PreviousData,
                  TotalDurationBetweenGroups):
     '''
     Run BHTE simulation cycles in a separate process for parallel computation.
@@ -493,6 +501,8 @@ def RunInProcess(queueResult,Backend,deviceName,queueMsg,
         Final temperature array.
     FinalDose : np.ndarray
         Final dose array.
+    PreviousData: dict or None
+        Previous data used to concatenate results
     TotalDurationBetweenGroups : int
         Duration between groups (steps).
     '''
@@ -532,6 +542,7 @@ def RunInProcess(queueResult,Backend,deviceName,queueMsg,
                     TemperaturePoints,
                     FinalTemp,
                     FinalDose,
+                    PreviousData,
                     bRunInSubProcess=True,
                     )
     queueResult.put(Res)
@@ -565,6 +576,7 @@ def CalculateTemperatureEffects(InputPData,
                                 BenchmarkTestFile='',
                                 bApplyMedianPressure=False,
                                 TxSystem='',
+                                prevSimulationResultsFile=''
                                 ):
 
     '''
@@ -616,7 +628,8 @@ def CalculateTemperatureEffects(InputPData,
         Properties for homogenous medium.
     BenchmarkTestFile : str, optional
         Path to benchmark test file.
-
+    prevSimulationResultsFile: str, optional
+        Path to previous thermal simulation. If specified, it is assumed we want to concatenate simulations.
     Returns
     -------
     str
@@ -966,6 +979,12 @@ def CalculateTemperatureEffects(InputPData,
     FinalDose=None
     TemperaturePoints=None
 
+    if len(prevSimulationResultsFile)>0:
+        print('Reading from previous file to concatenate',prevSimulationResultsFile)
+        PreviousData=ReadFromH5py(prevSimulationResultsFile)
+    else:
+        PreviousData=None
+
     if TOTAL_Iterations <= LimitBHTEIterationsPerProcess:
         nCurrent=0
         ResTemp,ResDose,FinalTemp,FinalDose,TemperaturePoints,nCurrent=RunBHTECycles(nCurrent,
@@ -990,7 +1009,8 @@ def CalculateTemperatureEffects(InputPData,
                     BaselineTemperature,
                     TemperaturePoints,
                     FinalTemp,
-                    FinalDose)
+                    FinalDose,
+                    PreviousData)
 
     else:
         queueResult=Queue()
@@ -1002,8 +1022,8 @@ def CalculateTemperatureEffects(InputPData,
                                                 NumberGroupedSonications,
                                                 Repetitions,
                                                 InputPData,
-                                                PMaps
-                                                ,MaterialMap,
+                                                PMaps,
+                                                MaterialMap,
                                                 MaterialList,
                                                 (Input['x_vec'][1]-Input['x_vec'][0]),
                                                 TotalDurationSteps,
@@ -1011,7 +1031,7 @@ def CalculateTemperatureEffects(InputPData,
                                                 nStepsOnIn,-1,nFactorMonitoring,dt,
                                                 DutyCycle,MonitoringPointsMap,
                                                 TemperaturePoints,BaselineTemperature,
-                                                FinalTemp,FinalDose,
+                                                FinalTemp,FinalDose,PreviousData,
                                                 TotalDurationBetweenGroups))
 
             fieldWorkerProcess.start()
@@ -1084,9 +1104,15 @@ def CalculateTemperatureEffects(InputPData,
         IndTarget=2
     else:
         IndTarget=3
-    SaveDict['TempProfileTarget']=TemperaturePoints[IndTarget,:]
-    SaveDict['TimeProfileTarget']=np.arange(SaveDict['TempProfileTarget'].size)*dt
-    SaveDict['TemperaturePoints']=TemperaturePoints #these are max points in skin, brain, skull and target
+    if PreviousData is None:
+        SaveDict['TimeProfileTarget']=np.arange(TemperaturePoints.shape[1])*dt
+        SaveDict['TempProfileTarget']=TemperaturePoints[IndTarget,:]
+        SaveDict['TemperaturePoints']=TemperaturePoints #these are max points in skin, brain, skull and target
+    else:
+        SaveDict['TimeProfileTarget']=np.hstack((PreviousData['TimeProfileTarget'],PreviousData['TimeProfileTarget'][-1]+dt+np.arange(TemperaturePoints.shape[1])*dt))
+        SaveDict['TempProfileTarget']=np.hstack((PreviousData['TempProfileTarget'],TemperaturePoints[IndTarget,:]))
+        SaveDict['TemperaturePoints']=np.hstack((PreviousData['TemperaturePoints'],TemperaturePoints))
+        
     SaveDict['MI']=MI
     SaveDict['x_vec']=xf*1e3
     SaveDict['y_vec']=yf*1e3

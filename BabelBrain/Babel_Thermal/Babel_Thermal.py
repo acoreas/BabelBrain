@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 from multiprocessing import Process,Queue
+from collections import UserDict
 
 from PySide6.QtWidgets import (QApplication, QWidget,QGridLayout,
                 QHBoxLayout,QVBoxLayout,QLineEdit,QDialog,QTextEdit,
@@ -54,6 +55,36 @@ def RCoeff(Temperature):
     R = np.ones(Temperature.shape)*0.25
     R[Temperature>=43]=0.5
     return R
+
+
+class ThermalProfileConfig(UserDict):
+    """Load a thermal YAML profile and normalize optional timing parameters."""
+
+    OPTIONAL_DEFAULTS_DC_PRF = {
+        'Repetitions': 1,
+        'NumberGroupedSonications': 1,
+        'PauseBetweenGroupedSonications': 0.0,
+    }
+
+    OPTIONAL_DEFAULTS = {
+        'bConcatenateSimulations': False
+    }
+
+    def __init__(self, yaml_path):
+        with open(yaml_path, 'r') as file:
+            config_data = yaml.safe_load(file) or {}
+        super().__init__(config_data)
+        self._apply_optional_defaults()
+
+    def _apply_optional_defaults(self):
+        for key, default_value in self.OPTIONAL_DEFAULTS.items():
+            if key not in self.data:
+                self.data[key] = default_value
+            
+        for timing_config in self.data.get('AllDC_PRF_Duration', []):
+            for key, default_value in self.OPTIONAL_DEFAULTS_DC_PRF.items():
+                if key not in timing_config:
+                    timing_config[key] = default_value
 
 class Babel_Thermal(QWidget):
     def __init__(self,parent=None,MainApp=None):
@@ -151,38 +182,29 @@ class Babel_Thermal(QWidget):
 
     def DefaultConfig(self):
         #Specific parameters for the thermal simulation - to be configured  via a yaml
-        with open(self._MainApp.Config['ThermalProfile'], 'r') as file:
-            config = yaml.safe_load(file)
-            print("Thermal configuration:")
-            for n in range(len(config['AllDC_PRF_Duration'])):
-                #if repetitions is not present in YAML (for all the old cases, we just assign a default value
-                if 'Repetitions' not in config['AllDC_PRF_Duration'][n]:
-                    config['AllDC_PRF_Duration'][n]['Repetitions']=1
-                if 'NumberGroupedSonications' not in config['AllDC_PRF_Duration'][n]:
-                    config['AllDC_PRF_Duration'][n]['NumberGroupedSonications']=1
-                if 'PauseBetweenGroupedSonications' not in config['AllDC_PRF_Duration'][n]:
-                    config['AllDC_PRF_Duration'][n]['PauseBetweenGroupedSonications']=0.0
-            print(config)
-            self.Config=config
-            self.bDisableUpdate=True
+        config = ThermalProfileConfig(self._MainApp.Config['ThermalProfile'])
+        print("Thermal configuration:")
+        print(config)
+        self.Config=config
+        self.bDisableUpdate=True
 
-            while self.Widget.SelCombinationDropDown.count()>0:
-                self.Widget.SelCombinationDropDown.removeItem(0)
+        while self.Widget.SelCombinationDropDown.count()>0:
+            self.Widget.SelCombinationDropDown.removeItem(0)
 
-            for c in self.Config['AllDC_PRF_Duration']:
-                if c['Duration']<1.0:
-                    sOn = '%3.2fs-On' % (c['Duration'])
-                else:
-                    sOn = '%3.1fs-On' % (c['Duration'])
-                if c['DurationOff']<1.0:
-                    sOff = '%3.2fs-Off' % (c['DurationOff'])
-                else:
-                    sOff = '%3.1fs-Off' % (c['DurationOff'])
-                stritem = sOn + ' ' + sOff + ' %3.1f%% %3.1fHz' %(c['DC']*100,c['PRF'])
-                if c['Repetitions'] >1:
-                    stritem += ' %iReps' %(c['Repetitions'])
-                self.Widget.SelCombinationDropDown.addItem(stritem)
-            self.bDisableUpdate=False
+        for c in self.Config['AllDC_PRF_Duration']:
+            if c['Duration']<1.0:
+                sOn = '%3.2fs-On' % (c['Duration'])
+            else:
+                sOn = '%3.1fs-On' % (c['Duration'])
+            if c['DurationOff']<1.0:
+                sOff = '%3.2fs-Off' % (c['DurationOff'])
+            else:
+                sOff = '%3.1fs-Off' % (c['DurationOff'])
+            stritem = sOn + ' ' + sOff + ' %3.1f%% %3.1fHz' %(c['DC']*100,c['PRF'])
+            if c['Repetitions'] >1:
+                stritem += ' %iReps' %(c['Repetitions'])
+            self.Widget.SelCombinationDropDown.addItem(stritem)
+        self.bDisableUpdate=False
 
     def EnableMultiPoint(self):
         self._bMultiPoint=True
@@ -467,7 +489,7 @@ class Babel_Thermal(QWidget):
 
             crlims=[0,1,2]
 
-            if (self._bRecalculated or self._prevDisplay != WhatDisplay) and hasattr(self,'_figIntThermalFields'):
+            if (self._bRecalculated or self._prevDisplay != WhatDisplay or self.Config['bConcatenateSimulations']) and hasattr(self,'_figIntThermalFields'):
                 children = []
                 for i in range(self._layout.count()):
                     child = self._layout.itemAt(i).widget()
@@ -803,6 +825,7 @@ class RunThermalSim(QObject):
         kargs['bForceHomogenousMedium']=self._mainApp.Config['bForceHomogenousMedium']
         kargs['HomogenousMediumValues']=self._mainApp.Config['HomogenousMediumValues']
         kargs['bForceNoAbsorptionSkullScalp']=self._mainApp.Config['bForceNoAbsorptionSkullScalp']
+        kargs['bConcatenateSimulations']=self._mainApp.ThermalSim.Config['bConcatenateSimulations']
 
         kargs['TxSystem']=self._mainApp.Config['TxSystem']
         if kargs['TxSystem'] in ['CTX_500','CTX_250','DPX_500','DPXPC_300','CTX_250_2ch',
