@@ -191,19 +191,22 @@ class Babel_Thermal(QWidget):
         while self.Widget.SelCombinationDropDown.count()>0:
             self.Widget.SelCombinationDropDown.removeItem(0)
 
-        for c in self.Config['AllDC_PRF_Duration']:
-            if c['Duration']<1.0:
-                sOn = '%3.2fs-On' % (c['Duration'])
-            else:
-                sOn = '%3.1fs-On' % (c['Duration'])
-            if c['DurationOff']<1.0:
-                sOff = '%3.2fs-Off' % (c['DurationOff'])
-            else:
-                sOff = '%3.1fs-Off' % (c['DurationOff'])
-            stritem = sOn + ' ' + sOff + ' %3.1f%% %3.1fHz' %(c['DC']*100,c['PRF'])
-            if c['Repetitions'] >1:
-                stritem += ' %iReps' %(c['Repetitions'])
-            self.Widget.SelCombinationDropDown.addItem(stritem)
+        if self.Config['bConcatenateSimulations']:
+            self.Widget.SelCombinationDropDown.addItem('CONCATENATED PROTOCOL')
+        else:
+            for c in self.Config['AllDC_PRF_Duration']:
+                if c['Duration']<1.0:
+                    sOn = '%3.2fs-On' % (c['Duration'])
+                else:
+                    sOn = '%3.1fs-On' % (c['Duration'])
+                if c['DurationOff']<1.0:
+                    sOff = '%3.2fs-Off' % (c['DurationOff'])
+                else:
+                    sOff = '%3.1fs-Off' % (c['DurationOff'])
+                stritem = sOn + ' ' + sOff + ' %3.1f%% %3.1fHz' %(c['DC']*100,c['PRF'])
+                if c['Repetitions'] >1:
+                    stritem += ' %iReps' %(c['Repetitions'])
+                self.Widget.SelCombinationDropDown.addItem(stritem)
         self.bDisableUpdate=False
 
     def EnableMultiPoint(self):
@@ -338,13 +341,18 @@ class Babel_Thermal(QWidget):
                                                         combination['Repetitions'])+'.h5'
                 self._NiftiThermalNames.append(os.path.splitext(ThermalName)[0])
                 self._ThermalResults.append(ReadFromH5py(ThermalName))
-            DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
+            if self.Config['bConcatenateSimulations']:
+                DataThermal=self._ThermalResults[-1] #we pick the latest one as that has the concatenated results
+            else:
+                DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
             self._xf=DataThermal['x_vec']
             self._zf=DataThermal['z_vec']
             SkinZ=np.array(np.where(DataThermal['MaterialMap']==1)).T.min(axis=0)[1]
             self._zf-=self._zf[SkinZ]
-        
-        DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
+        if self.Config['bConcatenateSimulations']:
+            DataThermal=self._ThermalResults[-1] #we pick the latest one as that has the concatenated results
+        else:
+            DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
         if 'BaselineTemperature' in DataThermal:
             BaselineTemperature=DataThermal['BaselineTemperature']
         else:
@@ -357,7 +365,10 @@ class Babel_Thermal(QWidget):
             self.Widget.IsppaScrollBar.setValue(Loc[1])
             self.Widget.IsppaScrollBar.setEnabled(True)
             
-        self._LastTMap=self.Widget.SelCombinationDropDown.currentIndex()
+        if self.Config['bConcatenateSimulations']:
+            self._LastTMap=len(self._ThermalResults)-1
+        else:
+            self._LastTMap=self.Widget.SelCombinationDropDown.currentIndex()
             
         if OverWriteIsppa is None:
             SelIsppa=self.Widget.IsppaSpinBox.value()
@@ -377,8 +388,13 @@ class Babel_Thermal(QWidget):
             AdjustedIsspa=np.mean(AdjustedIsspa)
         else:
             AdjustedIsspa = SelIsppa/DataThermal['RatioLosses']
-                
-        DutyCycle=self.Config['AllDC_PRF_Duration'][self.Widget.SelCombinationDropDown.currentIndex()]['DC']
+        
+        if self.Config['bConcatenateSimulations']:
+            DutyCycle=[]
+            for entry in self.Config['AllDC_PRF_Duration']:
+                DutyCycle.append(entry['DC'])
+        else:
+            DutyCycle=self.Config['AllDC_PRF_Duration'][self.Widget.SelCombinationDropDown.currentIndex()]['DC']
 
         def NewItem(str,data,color="blue"):
             item=QTableWidgetItem(str)
@@ -426,10 +442,15 @@ class Babel_Thermal(QWidget):
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f (%4.2f)' % (AdjustedIsspa,AdjustedIsspaStDev),AdjustedIsspa))
         else:
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % AdjustedIsspa,AdjustedIsspa))
-            
-        self.Widget.tableWidget.setItem(2,1,NewItem('%4.2f' % (SelIsppa*DutyCycle),SelIsppa*DutyCycle))
 
-        self.Widget.tableWidget.setItem(3,1,NewItem('%4.2f' % (IsppaTarget*DutyCycle),IsppaTarget*DutyCycle))
+        if self.Config['bConcatenateSimulations']:
+            st=','.join(format(x*SelIsppa, "2.1f") for x in DutyCycle)
+            self.Widget.tableWidget.setItem(2,1,NewItem(st,[x * SelIsppa for x in DutyCycle]))
+            st=','.join(format(x*IsppaTarget, "2.1f") for x in DutyCycle)
+            self.Widget.tableWidget.setItem(3,1,NewItem(st,[x * IsppaTarget for x in DutyCycle]))
+        else:
+            self.Widget.tableWidget.setItem(2,1,NewItem('%4.2f' % (SelIsppa*DutyCycle),SelIsppa*DutyCycle))
+            self.Widget.tableWidget.setItem(3,1,NewItem('%4.2f' % (IsppaTarget*DutyCycle),IsppaTarget*DutyCycle))
 
         self.Widget.tableWidget.setItem(4,1,NewItem(np.array2string(DataThermal['AdjustmentInRAS'],
                                                formatter={'float_kind':lambda x: "%3.2f" % x}),DataThermal['AdjustmentInRAS']))
