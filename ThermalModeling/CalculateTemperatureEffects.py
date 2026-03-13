@@ -337,8 +337,8 @@ def RunBHTECycles(nCurrent,
         else:
             if PreviousData is not None:
                 print('Starting thermal simulation with previous results')
-                initT0=np.ascontiguousarray(PreviousData['FinalTemp'])
-                initDose=np.ascontiguousarray(PreviousData['FinalDose'])
+                initT0=PreviousData['FinalTemp']
+                initDose=PreviousData['FinalDose']
                 print('MaxT0',initT0.max())
             else:
                 initT0=None
@@ -910,7 +910,16 @@ def CalculateTemperatureEffects(InputPData,
             print('*'*40)
         print('Average (std) of pressure ratio and losses = %f(%f) , %f(%f)' % (np.mean(PressureRatio),np.std(PressureRatio),np.mean(RatioLosses),np.std(RatioLosses)))
             
-    
+    if len(prevSimulationResultsFile)>0:
+        print('Reading from previous file to concatenate',prevSimulationResultsFile)
+        PreviousData=ReadFromH5py(prevSimulationResultsFile)
+        initT0=PreviousData['FinalTemp']
+        initDose=PreviousData['FinalDose']
+    else:
+        PreviousData=None
+        initT0=None
+        initDose=None
+
     if type(InputPData) is str:
         ResTemp,ResDose,MonitorSlice,Qarr=BHTE(pAmp*PressureRatio,
                                                         MaterialMap,
@@ -923,7 +932,9 @@ def CalculateTemperatureEffects(InputPData,
                                                         dt=dt,
                                                         DutyCycle=DutyCycle,
                                                         Backend=Backend,
-                                                        stableTemp=BaselineTemperature)
+                                                        stableTemp=BaselineTemperature,
+                                                        initT0=initT0,
+                                                        initDose=initDose)
     else:
         InputsBHTE=AllInputs.copy()
         for n in range(len(InputPData)):
@@ -938,7 +949,9 @@ def CalculateTemperatureEffects(InputPData,
                                                       nFactorMonitoring=nFactorMonitoring,
                                                       dt=dt,
                                                       Backend=Backend,
-                                                      stableTemp=BaselineTemperature)
+                                                      stableTemp=BaselineTemperature,
+                                                      initT0=initT0,
+                                                      initDose=initDose)
     gc.collect()
 
     ResTempSkin=ResTemp * SelSkin.astype(np.float32)
@@ -979,12 +992,7 @@ def CalculateTemperatureEffects(InputPData,
     FinalDose=None
     TemperaturePoints=None
 
-    if len(prevSimulationResultsFile)>0:
-        print('Reading from previous file to concatenate',prevSimulationResultsFile)
-        PreviousData=ReadFromH5py(prevSimulationResultsFile)
-    else:
-        PreviousData=None
-
+    
     if TOTAL_Iterations <= LimitBHTEIterationsPerProcess:
         nCurrent=0
         ResTemp,ResDose,FinalTemp,FinalDose,TemperaturePoints,nCurrent=RunBHTECycles(nCurrent,
