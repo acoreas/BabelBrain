@@ -101,8 +101,8 @@ class OptionalParams(object):
         self._DefaultAdvanced['bDisableCTMedianFilter']=False
         self._DefaultAdvanced['bGeneratePETRAHistogram']=False
         self._DefaultAdvanced['BaselineTemperature']=37.0
-        self._DefaultAdvanced['PETRASlope']=-2929.6
-        self._DefaultAdvanced['PETRAOffset']=3274.9
+        self._DefaultAdvanced['PETRASlope']=-2080.0
+        self._DefaultAdvanced['PETRAOffset']=2133.2
         self._DefaultAdvanced['ZTESlope']=-2085.0
         self._DefaultAdvanced['ZTEOffset']=2329.0
         self._DefaultAdvanced['bSaveStress']=False

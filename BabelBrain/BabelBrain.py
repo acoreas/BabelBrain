@@ -721,6 +721,7 @@ class BabelBrain(QWidget):
         self.Widget.AdvancedOptions.clicked.connect(self.ShowAdvancedOptions)
 
         #Then we update the GUI and control parameters
+        self.UpdateFrequencyFloat(0)
         self.UpdateMaskParameters()
 
         stdout = OutputWrapper(self, True)

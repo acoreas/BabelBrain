@@ -1133,8 +1133,8 @@ class BabelFTD_Simulations_BASE(object):
             Porosity=HUtoPorosity(AllBoneHU)
             if self._MappingMethod=='Webb-Marsac':
                 if self._bDensity == False:
-                    if self._bPETRA:
-                        print('Using PETRA to low energy 70 Kvp CT settings')
+                    if self._bPETRA: #we use Bjorn's formula to convert to Density
+                       
                         DensityCTIT=HUtoDensityUCLLowEnergy(AllBoneHU)
                     else:
                         print('Using 120 Kvp CT settings')

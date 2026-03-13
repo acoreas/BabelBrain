@@ -353,6 +353,23 @@ def BiasCorrecAndCoreg(InputT1,
 
     return T1fnameBiasCorrec,ZTEInT1W
 
+def bone_from_label(label):
+    """
+    get bone label from the m2m_subid/final_tissues.nii.gz label
+    """
+    return (label == 7) | (label == 8)
+
+
+def soft_tissue_from_label(label):
+    """
+    get soft tissue label from the m2m_subid/final_tissues.nii.gz label
+    soft tissue is defined as everything that is not air or bone in the image
+    """
+    background = label == 0
+    bone = bone_from_label(label)
+    soft_tissue = np.logical_not(background) & np.logical_not(bone)
+    return soft_tissue
+
 def ConvertZTE_PETRA_pCT(InputT1,
                          InputZTE,
                          TMaskItk,
@@ -361,8 +378,8 @@ def ConvertZTE_PETRA_pCT(InputT1,
                          PetraMRIPeakDistance=50,
                          PetraNPeaks=2,
                          bGeneratePETRAHistogram=False,
-                         PETRASlope=-2929.6,
-                         PETRAOffset=3274.9,
+                         PETRASlope=-2080.02235771,
+                         PETRAOffset=2133.22867303,
                          ZTESlope=-2085.0,
                          ZTEOffset=2329.0):
     print('converting ZTE/PETRA to pCT with range',file_manager.pseudo_CT_range)
@@ -381,6 +398,8 @@ def ConvertZTE_PETRA_pCT(InputT1,
         regions= regionprops(label_img)
         regions=sorted(regions,key=lambda d: d.area) #we eliminate the large background region
         arrCavities=(label_img!=0) &(label_img!=regions[-1].label)
+        soft_tissue=soft_tissue_from_label(charmdata)
+
     else:
         InputBrainMask=os.path.join(SimbsPath,'csf.nii.gz')
         SkinMask=os.path.join(SimbsPath,'skin.nii.gz')
@@ -406,42 +425,26 @@ def ConvertZTE_PETRA_pCT(InputT1,
         arrZTE=volumeZTE.get_fdata()
         arrHead=volumeHead.get_fdata()
 
-        if bIsPetra: # FUN23 Miscouridou et al. Adapted from  https://github.com/ucl-bug/petra-to-ct
+        if bIsPetra: # SimNIBS petra2Density
             print('Using PETRA specification to convert to pCT')
-
-            #histogram normalization
             #histogram normalization
             if (arrZTE.max()-arrZTE.min())>2**16-1:
                 raise ValueError('The range of values in the ZTE file exceeds 2^16')
-            edgesin=np.arange(int(arrZTE.min()),int(arrZTE.max())+2)-0.5                   
-            hist_vals, edges = np.histogram(arrZTE.flatten().astype(int),bins=edgesin)
-            bins = (edges[1:] + edges[:-1])/2
-            bins = bins[1:]
-            hist_vals = hist_vals[1:]
-
-            PeakDistance = int(PetraMRIPeakDistance/np.mean(np.diff(bins)))
-
-            pks,_ = signal.find_peaks(hist_vals,distance=PeakDistance)
-            locs = bins[pks]
-            pks=hist_vals[pks]
-
-            ind=np.argsort(pks)
-            ind=ind[::-1][:PetraNPeaks]
-            pks=pks[ind]
-            locs=locs[ind]
-            arrZTE/=np.max(locs)
+            h = np.histogram(arrZTE[soft_tissue], bins=100)
+            bins = (h[1][1:] + h[1][:-1])/2
+            vals = h[0]
+            soft_tissue_value = bins[np.argmax(vals)]
+            
+            arrZTE = arrZTE / soft_tissue_value
 
             if bGeneratePETRAHistogram:
                 plt.figure()
-                plt.plot(bins, hist_vals);
-                for ind2 in locs:
-                    plt.plot([ind2,ind2],[np.min(hist_vals),np.max(hist_vals)])
-                plt.xlabel('PETRA Value')
-                plt.ylabel('Count')
-                plt.title('Image Histogram')
+                plt.plot(bins, vals)
+                plt.scatter(soft_tissue_value, np.max(vals))
                 petrahistofname = InputZTE.split('.nii')[0]+'-PETRA_Histogram.pdf'
                 plt.savefig(petrahistofname)
                 plt.close('all')
+
         else:
             maskedZTE =arrZTE.copy()
             maskedZTE[arrMask==0]=-1000
