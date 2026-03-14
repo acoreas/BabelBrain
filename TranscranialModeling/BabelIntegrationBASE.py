@@ -343,6 +343,23 @@ def HUtoDensityUCLLowEnergy(hu_in):
     ct_calibration=f['ct_calibration'][:][0,:,:].T
     return np.interp(hu_in,ct_calibration[0,:],ct_calibration[1,:])
 
+def SimNIBS_PETRApct_Density(hu_in):
+    MAX_CT_VALUE = 3150 # [hu]
+    MAX_DENSITY_VALUE = 3147.35469785 # [kg/m3]
+    DENSITY_WATER = 1000.0  # [kg/m3]
+    points = np.loadtxt(os.path.join(resource_path(),'ct_to_density_calibration_cph2025_line_v1.csv'), delimiter=",")
+    points = np.concatenate((points, [[MAX_CT_VALUE, MAX_DENSITY_VALUE]]))
+    hu_values, density_values = points[:, 0], points[:, 1]
+    assert np.all(np.diff(hu_values) > 0), "ct to density values must be increasing only in the calibration file."
+    assert np.all(np.diff(density_values) > 0), "ct to density values must be increasing only in the calibration file."
+
+    hu_values, density_values = points[:, 0], points[:, 1]
+    density = np.interp(hu_in, hu_values, density_values)
+    density[(density < DENSITY_WATER)] = DENSITY_WATER # bone should not have lower density than water
+    print('SimNIBS_PETRApct_Density, min, max',density.min(),density.max())
+    return density
+
+
 def DensitytoLSOSMarsac(density):
     '''
     Convert tissue density to longitudinal speed of sound using Marsac model.
@@ -1134,8 +1151,8 @@ class BabelFTD_Simulations_BASE(object):
             if self._MappingMethod=='Webb-Marsac':
                 if self._bDensity == False:
                     if self._bPETRA: #we use Bjorn's formula to convert to Density
-                       
-                        DensityCTIT=HUtoDensityUCLLowEnergy(AllBoneHU)
+                        print('Using SimNIBS petra to density')
+                        DensityCTIT=SimNIBS_PETRApct_Density(AllBoneHU)
                     else:
                         print('Using 120 Kvp CT settings')
                         DensityCTIT=HUtoDensityMarsac(AllBoneHU)
