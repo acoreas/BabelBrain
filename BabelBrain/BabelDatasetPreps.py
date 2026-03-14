@@ -1174,4 +1174,4 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
     # Ensure all files have been saved before moving on
     S1_file_manager.shutdown()
 
-    return FinalMask 
+    return FinalMask,S1_file_manager.output_files

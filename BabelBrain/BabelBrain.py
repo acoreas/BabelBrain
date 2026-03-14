@@ -54,6 +54,7 @@ from nibabel import processing
 from superqt import QLabeledDoubleRangeSlider
 
 from CalculateMaskProcess import CalculateMaskProcess
+from CTZTEProcessing import ConfirmPseudoCT
 from ConvMatTransform import (
     BSight_to_itk,
     GetIDTrajectoryBrainsight,
@@ -791,7 +792,9 @@ class BabelBrain(QWidget):
     @Slot(float)
     def UpdateFrequencyFloat(self, newvalue):
         if float(self.Widget.USMaskkHzDropDown.currentText())>350:
-            self.Widget.USPPWSpinBox.setValue(6) 
+            self.Widget.USPPWSpinBox.setValue(6)
+        else:
+            self.Widget.USPPWSpinBox.setValue(9)
         self.UpdateMaskParameters()
 
     @Slot(float)
@@ -846,7 +849,7 @@ class BabelBrain(QWidget):
             self.worker = RunMaskGeneration(self)
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
-            self.worker.finished.connect(self.UpdateMask)
+            self.worker.finished.connect(self.VerifyResults)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
@@ -911,8 +914,6 @@ class BabelBrain(QWidget):
                 f.write(outString)
         return newFName
 
-
-
     def UpdateAcousticTab(self):
         self.AcSim.NotifyGeneratedMask()
 
@@ -929,7 +930,16 @@ class BabelBrain(QWidget):
             self.testing_error = True
             self.Widget.tabWidget.setEnabled(True)
 
-    def UpdateMask(self):
+    def VerifyResults(self,output_files):
+        self.hideClockDialog()
+        if self.Config['bUseCT']:
+            if self.Config['CTType'] in [2,3]:
+                if not ConfirmPseudoCT(output_files['pCTfname']):
+                    self.UpdateMask(bDeleteOnly=True)
+                    return
+        self.UpdateMask()
+
+    def UpdateMask(self,bDeleteOnly=False):
         '''
         Refresh mask
         '''
@@ -1006,6 +1016,8 @@ class BabelBrain(QWidget):
         if hasattr(self,'_figMasks'):
             while ((child := self._layout.takeAt(0)) != None):
                 child.widget().deleteLater()
+        if bDeleteOnly:
+            return
         self._imMasks=[]
         self._imT1W=[]
         self._imCtMasks=[]
@@ -1195,7 +1207,7 @@ class RunMaskGeneration(QObject):
     '''
     Worker class for running mask generation in a separate process.
     '''
-    finished = Signal()
+    finished = Signal(object)
     endError = Signal()
 
     def __init__(self,mainApp):
@@ -1332,16 +1344,22 @@ class RunMaskGeneration(QObject):
             time.sleep(0.1)
             while queue.empty() == False:
                 cMsg=queue.get()
-                print(cMsg,end='')
-                if '--Babel-Brain-Low-Error' in cMsg:
-                    bNoError=False
+                if type(cMsg) is dict:
+                    output_files=cMsg
+                else:
+                    print(cMsg,end='')
+                    if '--Babel-Brain-Low-Error' in cMsg:
+                        bNoError=False
 
         maskWorkerProcess.join()
         while queue.empty() == False:
             cMsg=queue.get()
-            print(cMsg,end='')
-            if '--Babel-Brain-Low-Error' in cMsg:
-                bNoError=False
+            if type(cMsg) is dict:
+                output_files=cMsg
+            else:
+                print(cMsg,end='')
+                if '--Babel-Brain-Low-Error' in cMsg:
+                    bNoError=False
         if bNoError:
             TEnd=time.time()
             TotalTime = TEnd-T0
@@ -1350,7 +1368,7 @@ class RunMaskGeneration(QObject):
             print("*"*5+" DONE calculating mask.")
             print("*"*40)
             self._mainApp.UpdateComputationalTime('domain',TotalTime)
-            self.finished.emit()
+            self.finished.emit(output_files)
         else:
             print("*"*40)
             print("*"*5+" Error in execution.")
