@@ -412,9 +412,16 @@ def get_si_aligned_dimension(affine):
     return dim, direction, score
 
 def ConfirmPseudoCT(CTfname):
-    pCT=nibabel.load(CTfname)
+    basepath=os.path.split(CTfname)[0]
+    dialog = PlotViewerCalibration([basepath+os.sep+'pCT_histogram.pdf'],
+                                   title="PseudoCT results",
+                                   confirmText="Confirm pseudoCT",
+                                   extraMsg="Verify skull bone histogram's limit is not too far "+
+                                             "or over the typical HU limit (2000)")
+    return dialog.exec()==QDialog.Accepted
+
+def GeneratePseudoCTHistogram(pCT,CTfname,DistanceFromTop=80.0):
     dim, direction, score=get_si_aligned_dimension(pCT.affine)
-    DistanceFromTop=80.0 # mm
     zm=pCT.header.get_zooms()
     NumberVoxelsFromTop=int(DistanceFromTop/zm[dim])
     data=pCT.get_fdata()
@@ -474,12 +481,6 @@ def ConfirmPseudoCT(CTfname):
     basepath=os.path.split(CTfname)[0]
     f.savefig(basepath+os.sep+'pCT_histogram.pdf',bbox_inches='tight')
     plt.close('all')
-    dialog = PlotViewerCalibration([basepath+os.sep+'pCT_histogram.pdf'],
-                                   title="PseudoCT results",
-                                   confirmText="Confirm pseudoCT",
-                                   extraMsg="Verify skull bone histogram's limit is not too far "+
-                                             "or over the typical HU limit (2000)")
-    return dialog.exec()==QDialog.Accepted
 
 
 def ConvertZTE_PETRA_pCT(InputT1,
@@ -596,5 +597,6 @@ def ConvertZTE_PETRA_pCT(InputT1,
         pCT = nibabel.Nifti1Image(arrCT,affine=volumeZTE.affine)
         CTfname = file_manager.output_files['pCTfname']
         file_manager.save_file(file_data=pCT,filename=CTfname,precursor_files=file_manager.output_files['ZTEInT1W'])
+        GeneratePseudoCTHistogram(pCT,CTfname)
     
     return pCT
