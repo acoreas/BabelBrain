@@ -1017,6 +1017,8 @@ class BabelBrain(QWidget):
             while ((child := self._layout.takeAt(0)) != None):
                 child.widget().deleteLater()
         if bDeleteOnly:
+            self.AcSim.setEnabled(False)
+            self.ThermalSim.setEnabled(False)
             return
         self._imMasks=[]
         self._imT1W=[]

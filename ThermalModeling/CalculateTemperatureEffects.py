@@ -852,7 +852,6 @@ def CalculateTemperatureEffects(InputPData,
         if bSegmentedBrain:
             BrainID=[2,3,4,5]
             SelSkull =MaterialMap>=6
-            SelSkull =MaterialMap>=3
         else:
             BrainID=[2]
             SelSkull = MaterialMap >2
