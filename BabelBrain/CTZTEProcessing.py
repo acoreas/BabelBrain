@@ -558,12 +558,23 @@ def ConvertZTE_PETRA_pCT(InputT1,
             #histogram normalization
             if (arrZTE.max()-arrZTE.min())>2**16-1:
                 raise ValueError('The range of values in the ZTE file exceeds 2^16')
-            h = np.histogram(arrZTE[soft_tissue], bins=100)
-            bins = (h[1][1:] + h[1][:-1])/2
-            vals = h[0]
-            soft_tissue_value = bins[np.argmax(vals)]
-            
-            arrZTE = arrZTE / soft_tissue_value
+            edgesin=np.arange(int(arrZTE.min()),int(arrZTE.max())+2)-0.5                   
+            hist_vals, edges = np.histogram(arrZTE.flatten().astype(int),bins=edgesin)
+            bins = (edges[1:] + edges[:-1])/2
+            bins = bins[1:]
+            hist_vals = hist_vals[1:]
+
+            PeakDistance = int(PetraMRIPeakDistance/np.mean(np.diff(bins)))
+
+            pks,_ = signal.find_peaks(hist_vals,distance=PeakDistance)
+            locs = bins[pks]
+            pks=hist_vals[pks]
+
+            ind=np.argsort(pks)
+            ind=ind[::-1][:PetraNPeaks]
+            pks=pks[ind]
+            locs=locs[ind]
+            arrZTE/=np.max(locs)
 
             if bGeneratePETRAHistogram:
                 plt.figure()
