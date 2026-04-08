@@ -457,12 +457,12 @@ class Babel_Thermal(QWidget):
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f (%4.2f)' % (AdjustedIsspa,AdjustedIsspaStDev),AdjustedIsspa))
         else:
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % AdjustedIsspa,AdjustedIsspa))
+        self.bDisableUpdate=True
         if bIsppaBrainToWater:
             self.Widget.IsppaWaterSpinBox.setValue(np.round(AdjustedIsspa,2))
         else:
-            self.bDisableUpdate=True
             self.Widget.IsppaSpinBox.setValue(np.round(SelIsppa,2))
-            self.bDisableUpdate=False
+        self.bDisableUpdate=False
 
         if self.Config['bConcatenateSimulations']:
             st=','.join(format(x*SelIsppa, "2.1f") for x in DutyCycle)
