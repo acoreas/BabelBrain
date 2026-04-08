@@ -115,11 +115,13 @@ class Babel_Thermal(QWidget):
 
         self.Widget.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateSelCombination)
         self.Widget.IsppaSpinBox.valueChanged.connect(self.UpdateThermalResults)
+        self.Widget.IsppaWaterSpinBox.valueChanged.connect(self.UpdateIsppaWater)
         self.Widget.IsppaScrollBar.valueChanged.connect(self.UpdateThermalResults)
         self.Widget.HideMarkscheckBox.stateChanged.connect(self.HideMarkChange)
         self.Widget.IsppaScrollBar.setEnabled(False)
         self.Widget.SelCombinationDropDown.setEnabled(False)
         self.Widget.IsppaSpinBox.setEnabled(False)
+        self.Widget.IsppaWaterSpinBox.setEnabled(False)
 
         self.Widget.LocMTB.clicked.connect(self.LocateMTB)
         self.Widget.LocMTB.setEnabled(False)
@@ -299,7 +301,11 @@ class Babel_Thermal(QWidget):
         self.UpdateThermalResults()
 
     @Slot()
-    def UpdateThermalResults(self,bUpdatePlot=True,OverWriteIsppa=None):
+    def UpdateIsppaWater(self,val):
+        self.UpdateThermalResults(bIsppaBrainToWater=False)
+
+    @Slot()
+    def UpdateThermalResults(self,bUpdatePlot=True,OverWriteIsppa=None,bIsppaBrainToWater=True):
         if self.bDisableUpdate:
             return
         self._MainApp.Widget.tabWidget.setEnabled(True)
@@ -307,6 +313,7 @@ class Babel_Thermal(QWidget):
         self.Widget.ExportMaps.setEnabled(True)
         self.Widget.SelCombinationDropDown.setEnabled(True)
         self.Widget.IsppaSpinBox.setEnabled(True)
+        self.Widget.IsppaWaterSpinBox.setEnabled(True)
         self.Widget.DisplayDropDown.setEnabled(True)
         WhatDisplay = self.Widget.DisplayDropDown.currentIndex()
         if WhatDisplay==0:
@@ -371,7 +378,15 @@ class Babel_Thermal(QWidget):
             self._LastTMap=self.Widget.SelCombinationDropDown.currentIndex()
             
         if OverWriteIsppa is None:
-            SelIsppa=self.Widget.IsppaSpinBox.value()
+            if bIsppaBrainToWater:
+                SelIsppa=self.Widget.IsppaSpinBox.value()
+            else:
+                SelIsppaWater=self.Widget.IsppaWaterSpinBox.value()
+                if self._bMultiPoint:
+                    RatioLossess=np.mean(DataThermal['RatioLosses'])
+                else:
+                    RatioLossess=DataThermal['RatioLosses']
+                SelIsppa=SelIsppaWater*RatioLossess
         else:
             SelIsppa=OverWriteIsppa
 
@@ -396,7 +411,7 @@ class Babel_Thermal(QWidget):
         else:
             DutyCycle=self.Config['AllDC_PRF_Duration'][self.Widget.SelCombinationDropDown.currentIndex()]['DC']
 
-        def NewItem(str,data,color="blue"):
+        def NewItem(str,data,color="blue",visible=True):
             item=QTableWidgetItem(str)
             item.setData(QtCore.Qt.UserRole,data)
             item.setForeground(QColor(color))
@@ -442,6 +457,12 @@ class Babel_Thermal(QWidget):
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f (%4.2f)' % (AdjustedIsspa,AdjustedIsspaStDev),AdjustedIsspa))
         else:
             self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % AdjustedIsspa,AdjustedIsspa))
+        if bIsppaBrainToWater:
+            self.Widget.IsppaWaterSpinBox.setValue(np.round(AdjustedIsspa,2))
+        else:
+            self.bDisableUpdate=True
+            self.Widget.IsppaSpinBox.setValue(np.round(SelIsppa,2))
+            self.bDisableUpdate=False
 
         if self.Config['bConcatenateSimulations']:
             st=','.join(format(x*SelIsppa, "2.1f") for x in DutyCycle)
