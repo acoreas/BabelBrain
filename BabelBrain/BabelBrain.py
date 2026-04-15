@@ -29,7 +29,7 @@ import numpy as np
 import importlib
 import yaml
 from PySide6.QtCore import QFile, QObject, QThread, Qt, Signal, Slot, QTimer
-from PySide6.QtGui import QIcon, QPalette, QTextCursor, QMovie,QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPalette, QTextCursor, QMovie, QPixmap
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
     QApplication,
@@ -483,6 +483,9 @@ class BabelBrain(QWidget):
         plt.rcParams['axes.labelcolor'] = FIGTEXTCOLOR
         plt.rcParams['xtick.color'] = FIGTEXTCOLOR
         plt.rcParams['ytick.color'] = FIGTEXTCOLOR
+
+        # Error text color for outputTerminal (red on both light and dark backgrounds)
+        self._err_color = QColor(Qt.red)
 
         self._WorkingDialog = ClockDialog(self)
         self.moveTimer = QTimer(self)
@@ -1376,6 +1379,27 @@ class RunMaskGeneration(QObject):
             print("*"*5+" Error in execution.")
             print("*"*40)
             self.endError.emit()
+def _apply_color_scheme(app):
+    """Apply an application-level stylesheet that keeps text readable in dark mode.
+
+    Qt enters "stylesheet mode" for any widget that has even a partial stylesheet
+    (including empty ones from Qt Designer .ui files).  In that mode, unspecified
+    properties no longer inherit from the system palette, so text can stay dark on
+    dark backgrounds.  Setting palette(window-text) at the *application* level has
+    the lowest CSS specificity, so it provides a safe default while intentionally
+    colored widgets (blue accent labels, green/red status buttons) override it.
+    """
+    bg = app.palette().color(QPalette.Window)
+    is_dark = bg.lightness() < 128
+    if is_dark:
+        app.setStyleSheet(
+            "QWidget { color: palette(window-text); }"
+            " QLabel { background: transparent; }"
+        )
+    else:
+        app.setStyleSheet("")
+
+
 def main():
     '''
     Main entry point for the BabelBrain application.
@@ -1399,7 +1423,16 @@ def main():
     args = parser.parse_args()
 
     app = QApplication([])
- 
+    _apply_color_scheme(app)
+    # Re-apply if the user switches dark/light mode while the app is running.
+    # colorSchemeChanged is available from Qt 6.5; guard for older installs.
+    try:
+        QGuiApplication.styleHints().colorSchemeChanged.connect(
+            lambda: _apply_color_scheme(app)
+        )
+    except AttributeError:
+        pass
+
     selwidget = SelFiles()
     
     prevConfig=GetLatestSelection()

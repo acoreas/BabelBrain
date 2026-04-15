@@ -107,9 +107,9 @@ class Babel_Thermal(QWidget):
         ui_file.close()
 
         self.Widget.SelectProfile.clicked.connect(self.SelectProfile)
-        self.Widget.SelectProfile.setStyleSheet("color: green")
+        self.Widget.SelectProfile.setStyleSheet("color: #2db52d")   # bright green, readable on light & dark
         self.Widget.CalculateThermal.clicked.connect(self.RunSimulation)
-        self.Widget.CalculateThermal.setStyleSheet("color: red")
+        self.Widget.CalculateThermal.setStyleSheet("color: #e03030")  # bright red, readable on light & dark
         self.Widget.ExportSummary.clicked.connect(self.ExportSummary)
         self.Widget.ExportMaps.clicked.connect(self.ExportMaps)
 
