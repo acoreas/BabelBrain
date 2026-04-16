@@ -211,6 +211,18 @@ elif 'Windows' in platform.system(): #for Windows
     datas = []
     binaries = []
     hiddenimports = []
+    
+    # CUDA paths
+    conda_prefix = os.environ["CONDA_PREFIX"]
+    cuda_include = os.path.join(conda_prefix, "Library", "include")
+    cuda_bin = os.path.join(conda_prefix, "Library", "bin")
+
+    # CUDA headers
+    datas += [(os.path.join(cuda_include,"cuda_runtime.h"), "./Library/include")]
+    datas += [(os.path.join(cuda_include,"cuda_fp16.h"), "./Library/include")]
+    
+    # CUDA dlls
+    binaries += [(f, ".") for f in glob.glob(os.path.join(cuda_bin, "*.dll"))]
 
     missing_package_info = ['BabelViscoFDTD',\
                         'cupy','cupyx','cupy_backends',
@@ -230,7 +242,7 @@ elif 'Windows' in platform.system(): #for Windows
         hiddenimports += modinfo[2]
         
     hiddenimports+=commonhidden
-    binaries+=[(os.environ['CONDA_PREFIX']+'/Library/bin/nvrtc-builtins64_117.dll','./')]
+    binaries+=[(os.environ['CONDA_PREFIX']+'/Library/bin/nvrtc-builtins64_132.dll','./')]
     datas+=commonDatas
     datas+=[('ExternalBin/elastix/run_win.bat','./ExternalBin/elastix'),
             ('SelFiles/form.ui','./SelFiles'),
