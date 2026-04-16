@@ -122,15 +122,19 @@ def InitCUDA(preamble=None,kernel_files=None,DeviceName='A6000',build_later=Fals
     if build_later:
         prgcl = complete_kernel
     else:
-        # Windows sometimes has issues finding CUDA
-        if platform.system()=='Windows':
-            sys.executable.split('\\')[:-1]
-            options=('-I',os.path.join(os.getenv('CUDA_PATH'),'Library','Include'),
+        
+        options = ('-I', str(resource_path()))
+        try:
+            prgcl = cp.RawModule(code=complete_kernel, options=options)
+        except Exception as e:
+            # Windows sometimes has issues finding CUDA
+            if platform.system()=='Windows':
+                print(f"Had trouble CUDA, adding CUDA_PATH to cp.RawModule options")
+                options = ('-I',os.path.join(os.getenv('CUDA_PATH'),'Library','Include'),
                         '-I',str(resource_path()),
                         '--ptxas-options=-v')
-        else:
-            options=('-I',str(resource_path()))
-        
+            else:
+                print(e)
         prgcl = cp.RawModule(code=complete_kernel,options=options)
 
     return ctx,prgcl,selDevice

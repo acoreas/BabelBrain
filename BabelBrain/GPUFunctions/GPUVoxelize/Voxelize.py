@@ -126,17 +126,22 @@ def Voxelize(inputMesh,targetResolution=1333/500e3/6*0.75*1e3,GPUBackend='OpenCL
         with ctx:
             constant_defs = constant_defs.replace('constant','__constant__')
             
-            # Windows sometimes has issues finding CUDA
-            if platform.system()=='Windows':
-                sys.executable.split('\\')[:-1]
-                options=('-I',os.path.join(os.getenv('CUDA_PATH'),'Library','Include'),
-                         '-I',str(resource_path()))
-            else:
-                options=('-I',str(resource_path()))
+            options=('-I',str(resource_path()))
             
-            # Build program from source code
-            prgcl = clp.RawModule(code= "#define _CUDA\n" + constant_defs + kernel_code,
-                                 options=options)
+            try: # Build program from source code
+                prgcl = clp.RawModule(code= "#define _CUDA\n" + constant_defs + kernel_code,
+                                    options=options)
+            except Exception as e:
+                # Windows sometimes has issues finding CUDA
+                if platform.system()=='Windows':
+                    print("Had trouble CUDA, adding CUDA_PATH to cp.RawModule options")
+                    # sys.executable.split('\\')[:-1]
+                    options=('-I',os.path.join(os.getenv('CUDA_PATH'),'Library','Include'),
+                            '-I',str(resource_path()))
+                    prgcl = clp.RawModule(code= "#define _CUDA\n" + constant_defs + kernel_code,
+                                            options=options)
+                else:
+                    print(e)
         
             # Create kernel from program function
             knl = prgcl.get_function("voxelize_triangle_solid")
