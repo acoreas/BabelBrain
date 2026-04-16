@@ -45,8 +45,6 @@ from PySide6.QtWidgets import (
 )
 from linetimer import CodeTimer
 from matplotlib import pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvas, NavigationToolbar2QT
-from matplotlib.figure import Figure
 from matplotlib.pyplot import cm
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
@@ -68,6 +66,7 @@ from SelFiles.SelFiles import SelFiles,ValidThermalProfile
 
 from Options.Options import AdvancedOptions, OptionalParams
 from ClockDialog import ClockDialog
+from GUIComponents.NiftiSliceViewer import NiftiSliceViewer
 
 
 multiprocessing.freeze_support()
@@ -475,7 +474,7 @@ class BabelBrain(QWidget):
             self.AcSim.EnableMultiPoint(profile['MultiPoint'])
             self.ThermalSim.EnableMultiPoint()
         self.InitApplication()
-        self.static_canvas=None
+        self._slice_viewer = None   # NiftiSliceViewer, created in UpdateMask
 
         # Set default figure text color, works for both light and dark mode
         FIGTEXTCOLOR = np.array(self.palette().color(QPalette.WindowText).getRgb())/255.0
@@ -942,206 +941,79 @@ class BabelBrain(QWidget):
                     return
         self.UpdateMask()
 
-    def UpdateMask(self,bDeleteOnly=False):
+    def UpdateMask(self, bDeleteOnly=False):
         '''
-        Refresh mask
+        Refresh mask — replaces Matplotlib panels with NiftiSliceViewer (VTK).
         '''
         self.hideClockDialog()
-        if self.Widget.HideMarkscheckBox.isEnabled()== False:
+        if not self.Widget.HideMarkscheckBox.isEnabled():
             self.Widget.HideMarkscheckBox.setEnabled(True)
         self.Widget.tabWidget.setEnabled(True)
         self.AcSim.setEnabled(True)
+
         try:
-            Data=nibabel.load(self._outnameMask)
-        except:
-            raise ValueError("BabelViscoInput file does not exist. This is most likely due to a crash related to high PPW, please explore using lower PPW")
-        FinalMask=Data.get_fdata()
-        FinalMask=np.flip(FinalMask,axis=2)
-        bSegmentedBrain= np.max(FinalMask)>5
-        self._bSegmentedBrain = bSegmentedBrain
-        T1W=nibabel.load(self._T1W_resampled_fname)
-        T1WData=T1W.get_fdata()
-        T1WData=np.flip(T1WData,axis=2)
-        self._T1WData=T1WData
-        
-        self._MaskData=Data
-        AirMask=None
-        if self.Config['bUseCT']:
-            self._CTnib=nibabel.load(self._prefix_path+'CT.nii.gz')
-            AllBoneHU = np.load(self._prefix_path+'CT-cal.npz')['UniqueHU']
-            CTData=AllBoneHU[np.flip(self._CTnib.get_fdata(),axis=2).astype(int)]
-            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
-                AirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz').get_fdata().astype(np.uint8)
-                AirMask=np.flip(AirMask,axis=2)
-        
-        self._FinalMask=FinalMask
-        voxSize=Data.header.get_zooms()
-        x_vec=np.arange(Data.shape[0])*voxSize[0]
-        x_vec-=x_vec.mean()
-        y_vec=np.arange(Data.shape[1])*voxSize[1]
-        y_vec-=y_vec.mean()
-        z_vec=np.arange(Data.shape[2])*voxSize[2]
-        z_vec-=z_vec.mean()
-        LocFocalPoint=np.array(np.where(FinalMask==5)).flatten()
-        self._LocFocalPoint=LocFocalPoint
-        CMapXZ=FinalMask[:,LocFocalPoint[1],:].T.copy()
-        CMapYZ=FinalMask[LocFocalPoint[0],:,:].T.copy()
-        CMapXY=FinalMask[:,:,LocFocalPoint[2]].T.copy()
-        if self.Config['bUseCT']:
-            CMapXZ[CMapXZ==2]=3
-            CMapYZ[CMapYZ==2]=3
-            CMapXY[CMapXY==2]=3
-        
-        sm=plt.cm.ScalarMappable(cmap='gray')
-        alpha=self.Widget.TransparencyScrollBar.value()/100.0
-        T1WXZ=sm.to_rgba(T1WData[:,LocFocalPoint[1],:].T,alpha=alpha)
-        T1WYZ=sm.to_rgba(T1WData[LocFocalPoint[0],:,:].T,alpha=alpha)
-        T1WXY=sm.to_rgba(T1WData[:,:,LocFocalPoint[2]].T,alpha=alpha)
+            mask_nib = nibabel.load(self._outnameMask)
+        except Exception:
+            raise ValueError(
+                "BabelViscoInput file does not exist. This is most likely due to a "
+                "crash related to high PPW, please explore using lower PPW"
+            )
 
-        sr=['y:','w:']
+        self._MaskData = mask_nib
+        self._bSegmentedBrain = np.max(mask_nib.get_fdata()) > 5
 
-        plt.rcParams['font.size']=8
-        extentXZ=[x_vec.min(),x_vec.max(),z_vec.max(),z_vec.min()]
-        extentYZ=[y_vec.min(),y_vec.max(),z_vec.max(),z_vec.min()]
-        extentXY=[x_vec.min(),x_vec.max(),y_vec.max(),y_vec.min()]
+        t1w_nib = nibabel.load(self._T1W_resampled_fname)
 
-        CTMaps=[None,None,None]
-        AirMaps=[None,None,None]
-        if self.Config['bUseCT']:
-            CTMaps=[CTData[:,LocFocalPoint[1],:].T,
-                    CTData[LocFocalPoint[0],:,:].T,
-                    CTData[:,:,LocFocalPoint[2]].T]
-            if AirMask is not None:
-                AirMaps=[AirMask[:,LocFocalPoint[1],:].T,
-                        AirMask[LocFocalPoint[0],:,:].T,
-                        AirMask[:,:,LocFocalPoint[2]].T]
+        # Keep the T1W array on self so UpdateAcousticTab can still use it
+        self._T1WData = t1w_nib.get_fdata()
 
-        if hasattr(self,'_figMasks'):
-            while ((child := self._layout.takeAt(0)) != None):
-                child.widget().deleteLater()
+        # Focal-point voxel (label == 5 in the mask)
+        mask_array = mask_nib.get_fdata()
+        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
+        self._LocFocalPoint = focal_voxel
+        self._FinalMask = mask_array
+
+        # --- tear down previous viewer if present ---
+        if not hasattr(self, '_layout'):
+            self._layout = QVBoxLayout(self.Widget.USMask)
+        else:
+            while (child := self._layout.takeAt(0)) is not None:
+                w = child.widget()
+                if w is not None:
+                    w.deleteLater()
+
         if bDeleteOnly:
             self.AcSim.setEnabled(False)
             self.ThermalSim.setEnabled(False)
             return
-        self._imMasks=[]
-        self._imT1W=[]
-        self._imCtMasks=[]
-        self._markers=[]
 
-        self._figMasks = Figure(figsize=(18, 6))
-        if not hasattr(self,'_layout'):
-            self._layout = QVBoxLayout(self.Widget.USMask)
+        # --- create / re-create the VTK viewer ---
+        self._slice_viewer = NiftiSliceViewer(self.Widget.USMask)
+        self._layout.addWidget(self._slice_viewer)
 
-        self.static_canvas = FigureCanvas(self._figMasks)
-        
-        toolbar=NavigationToolbar2QT(self.static_canvas,self)
-        self._layout.addWidget(toolbar)
-        self._layout.addWidget(self.static_canvas)
+        alpha = self.Widget.TransparencyScrollBar.value() / 100.0
+        self._slice_viewer.set_volumes(
+            t1w_nib    = t1w_nib,
+            mask_nib   = mask_nib,
+            focal_voxel= focal_voxel,
+            alpha      = alpha,
+        )
 
-        axes=self.static_canvas.figure.subplots(1,3)
-        self._axes=axes
-
-        for CMap,T1WMap,CTMap,AirMap,extent,static_ax,vec1,vec2,c1,c2 in zip([CMapXZ,CMapYZ,CMapXY],
-                                [T1WXZ,T1WYZ,T1WXY],
-                                CTMaps,
-                                AirMaps,
-                                [extentXZ,extentYZ,extentXY],
-                                axes,
-                                [x_vec,y_vec,x_vec],
-                                [z_vec,z_vec,y_vec],
-                                [LocFocalPoint[0],LocFocalPoint[1],LocFocalPoint[0]],
-                                [LocFocalPoint[2],LocFocalPoint[2],LocFocalPoint[1]]):
-
-            if bSegmentedBrain:
-                vmaxMask=8
-            else:
-                vmaxMask=5
-            self._imMasks.append(static_ax.imshow(CMap,cmap=cm.jet,vmin=0,vmax=vmaxMask,extent=extent,interpolation='none',aspect='equal'))
-            if CTMap is not None:
-                Zm = np.ma.masked_where((CMap !=2) &(CMap!=3) , CTMap)
-                self._imCtMasks.append(static_ax.imshow(Zm,cmap=cm.gray,extent=extent,aspect='equal'))               
-            else:
-                self._imCtMasks.append(None)
-
-            if AirMap is not None:
-                Zm = np.ma.masked_where(AirMap==0 , AirMap)
-                cmap = ListedColormap(['black', (223/255,199/255,224/255,1.0)]) 
-                self._imCtMasks.append(static_ax.imshow(Zm,cmap=cmap,vmin=0,vmax=1,extent=extent,aspect='equal'))
-            self._imT1W.append(static_ax.imshow(T1WMap,extent=extent,aspect='equal')) 
-            self._markers.append(static_ax.plot(vec1[c1],vec2[c2],'+y',markersize=14)[0])
-        im = self._imMasks[-1]
-        if self.Config['bUseCT']:
-            if bSegmentedBrain:
-                values =[1,4,6,7,8]
-                legends  = ['scalp','brain-n.s','white m.','gray m.','CSF']
-                colors =[(0.0, 0.3, 1.0, 1.0), 
-                        (0.4863,  1.0,  0.4745,   1.0),
-                        (1.0,  0.5804,   0.0,  1.0),
-                        (1.0,  0.1137,   0.0,  1.0),
-                        (0.4980, 0.0,   0.0,    1.0)]
-            else:
-                values =[1,4]
-                legends  = ['scalp','brain']
-                colors =[(0.0, 0.3, 1.0, 1.0), 
-                     (1.0, 0.40740740740740755,0.0, 1.0)]
-            #we use manual color asignation 
-            
-        else:
-            if bSegmentedBrain:
-                values =[1,2,3,4,6,7,8]
-                legends  = ['scalp','cort.','trab.','brain-n.s','white m.','gray m.','CSF']
-                colors = [(0.0, 0.3, 1.0, 1.0), 
-                        (0.0, 0.5020, 1.0, 1.0),
-                        (0.0824,  1.0,  0.8824, 1.0),
-                        (0.4863,  1.0,  0.4745,   1.0),
-                        (1.0,  0.5804,   0.0,  1.0),
-                        (1.0,  0.1137,   0.0,  1.0),
-                        (0.4980, 0.0,   0.0,    1.0)]
-                
-            else:
-                values =[1,2,3,4]
-                legends  = ['scalp','cort.','trab.','brain']
-                colors = [(0.0, 0.0, 1.0, 1.0), 
-                      (0.16129032258064513, 1.0, 0.8064516129032259, 1.0), 
-                      (0.8064516129032256, 1.0, 0.16129032258064513, 1.0), 
-                      (1.0, 0.40740740740740755, 0.0, 1.0)]
-                
-        if AirMask is not None:
-            values.append(values[-1]+1)
-            legends.append('Air')
-            colors.append((223/255,199/255,224/255,1.0))
-            		
-            #we use manual color asignation 
-                
-        patches = [ mpatches.Patch(color=colors[i], label=legends[i] ) for i in range(len(values)) ]
-        leg=axes[-1].legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
-        self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
-        self._figMasks.set_facecolor(self._BackgroundColorFigures)
-        leg.get_frame().set_facecolor(self._BackgroundColorFigures)
         self.UpdateAcousticTab()
         self.Widget.TransparencyScrollBar.setEnabled(True)
 
     @Slot()
-    def HideMarks(self,v):
-        mc=[0.75, 0.75, 0.0,1.0]
-        if self.Widget.HideMarkscheckBox.isChecked():
-            mc[3] = 0.0
-        for m in self._markers:
-            m.set_markerfacecolor(mc)
-            m.set_markeredgecolor(mc)
-        self._figMasks.canvas.draw_idle()
-    
+    def HideMarks(self, v):
+        if hasattr(self, '_slice_viewer'):
+            self._slice_viewer.set_marks_visible(
+                not self.Widget.HideMarkscheckBox.isChecked()
+            )
+
     @Slot()
     def UpdateTransparency(self):
-        alpha=self.Widget.TransparencyScrollBar.value()/100.0
-        sm=plt.cm.ScalarMappable(cmap='gray')
-        T1WXZ=sm.to_rgba(self._T1WData[:,self._LocFocalPoint[1],:].T,alpha=alpha)
-        T1WYZ=sm.to_rgba(self._T1WData[self._LocFocalPoint[0],:,:].T,alpha=alpha)
-        T1WXY=sm.to_rgba(self._T1WData[:,:,self._LocFocalPoint[2]].T,alpha=alpha)
-        for im,T1WMap in zip(self._imT1W,
-                                    [T1WXZ,T1WYZ,T1WXY]):
-            im.set_data(T1WMap)
-        self._figMasks.canvas.draw_idle()
+        alpha = self.Widget.TransparencyScrollBar.value() / 100.0
+        if hasattr(self, '_slice_viewer'):
+            self._slice_viewer.set_transparency(alpha)
             
           
     def GetExport(self):
