@@ -151,6 +151,7 @@ class Babel_Thermal(QWidget):
         text_color = self.Widget.tableWidget.parent().palette().color(self.Widget.foregroundRole())
         table_palette = self.Widget.tableWidget.palette()
         table_palette.setColor(QPalette.Base, bg_color)
+        table_palette.setColor(QPalette.Text, text_color)
         self.Widget.tableWidget.setPalette(table_palette)
         if 'Windows' in platform.system():
             
@@ -414,7 +415,14 @@ class Babel_Thermal(QWidget):
         def NewItem(str,data,color="blue",visible=True):
             item=QTableWidgetItem(str)
             item.setData(QtCore.Qt.UserRole,data)
-            item.setForeground(QColor(color))
+            is_dark = self.Widget.tableWidget.palette().color(QPalette.Base).lightness() < 128
+            if color == "blue":
+                resolved_color = QColor("#5ba3ff" if is_dark else "#0050cc")
+            elif color == "red":
+                resolved_color = QColor("#e03030")
+            else:
+                resolved_color = QColor(color)
+            item.setForeground(resolved_color)
             # Set the font style to bold
             font = item.font()
             font.setBold(True)
