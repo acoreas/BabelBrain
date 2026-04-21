@@ -658,6 +658,16 @@ class SliceViewport(QFrame):
         self._cross_h.VisibilityOn(); self._cross_v.VisibilityOn()
         self.vtk_widget.GetRenderWindow().Render()
 
+    def set_crosshair_visible(self, visible: bool) -> None:
+        """Show or hide both crosshair lines without moving them."""
+        if visible:
+            self._cross_h.VisibilityOn()
+            self._cross_v.VisibilityOn()
+        else:
+            self._cross_h.VisibilityOff()
+            self._cross_v.VisibilityOff()
+        self.vtk_widget.GetRenderWindow().Render()
+
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _apply_volume_property(self, prop: vtk.vtkImageProperty, rec: VolumeRecord):
@@ -1030,7 +1040,8 @@ class NiftiViewer(QWidget):
         self._radiological   = False
         self._geoms:         list[PlaneGeometry] = []
         self._half_len:      float = 100.
-        self._selected_vol:  int = 0   # index of volume receiving WL drags
+        self._selected_vol:  int = 0
+        self._crosshair_visible: bool = True
         self._build_ui()
 
     def _build_ui(self):
@@ -1117,6 +1128,73 @@ class NiftiViewer(QWidget):
         self._radiological = enabled
         if self._mode == self.MODE_MEDICAL and self._volumes:
             self._refresh()
+
+    def set_crosshair_visible(self, visible: bool) -> None:
+        """Show or hide crosshairs in all three viewports."""
+        self._crosshair_visible = visible
+        for vp in self._vps:
+            vp.set_crosshair_visible(visible)
+
+    def grab_screenshot(self, path: str) -> None:
+        """
+        Capture all three viewports and save them side-by-side as a PNG.
+
+        Each viewport is captured via vtkWindowToImageFilter at its native
+        render-window resolution, then the three images are stitched
+        horizontally using QPainter on a QImage.
+        """
+        from vtkmodules.vtkIOImage import vtkPNGWriter
+        from vtkmodules.vtkRenderingCore import vtkWindowToImageFilter
+        from PySide6.QtGui import QImage, QPainter
+        import tempfile, os as _os
+
+        strips: list[QImage] = []
+        tmp_files: list[str] = []
+
+        for vp in self._vps:
+            rw = vp.vtk_widget.GetRenderWindow()
+            rw.Render()
+
+            wti = vtkWindowToImageFilter()
+            wti.SetInput(rw)
+            wti.SetScale(1)
+            wti.ReadFrontBufferOff()
+            wti.Update()
+
+            # Write to a temp PNG and read back as QImage
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            _os.close(fd)
+            tmp_files.append(tmp)
+
+            writer = vtkPNGWriter()
+            writer.SetFileName(tmp)
+            writer.SetInputConnection(wti.GetOutputPort())
+            writer.Write()
+
+            img = QImage(tmp)
+            strips.append(img)
+
+        # Stitch side-by-side
+        total_w = sum(i.width()  for i in strips)
+        max_h   = max(i.height() for i in strips)
+        combined = QImage(total_w, max_h, QImage.Format.Format_RGB32)
+        combined.fill(QColor(BG_DARK))
+
+        painter = QPainter(combined)
+        x = 0
+        for img in strips:
+            painter.drawImage(x, 0, img)
+            x += img.width()
+        painter.end()
+
+        combined.save(path, "PNG")
+
+        # Clean up temp files
+        for tmp in tmp_files:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
 
     # ── Window / level drag ───────────────────────────────────────────────
 
@@ -1221,8 +1299,9 @@ class NiftiViewer(QWidget):
             world_pt = np.linalg.solve(A, b)
         except np.linalg.LinAlgError:
             world_pt = self._geoms[0].centre.copy()
-        for vp in self._vps:
-            vp.set_crosshair(world_pt, self._half_len)
+        if self._crosshair_visible:
+            for vp in self._vps:
+                vp.set_crosshair(world_pt, self._half_len)
 
 
 # ── Main window ────────────────────────────────────────────────────────────
@@ -1312,6 +1391,28 @@ class NiftiViewerWindow(QMainWindow):
         cl.addWidget(self._cb_radio)
         tb.addWidget(conv_box)
 
+        tb.addSeparator()
+
+        # View options
+        view_box = QGroupBox("View")
+        vl = QHBoxLayout(view_box); vl.setContentsMargins(6,2,6,2); vl.setSpacing(10)
+        self._cb_crosshair = QCheckBox("Crosshairs")
+        self._cb_crosshair.setChecked(True)
+        self._cb_crosshair.stateChanged.connect(
+            lambda s: self.viewer.set_crosshair_visible(bool(s)))
+        vl.addWidget(self._cb_crosshair)
+        tb.addWidget(view_box)
+
+        tb.addSeparator()
+
+        # Screenshot
+        self._btn_screenshot = QPushButton("  📷 Screenshot…")
+        self._btn_screenshot.setEnabled(True)
+        self._btn_screenshot.setToolTip(
+            "Save all three views side-by-side as a PNG")
+        self._btn_screenshot.clicked.connect(self._take_screenshot)
+        tb.addWidget(self._btn_screenshot)
+
     def _on_mode(self, btn_id: int):
         mode = NiftiViewer.MODE_AFFINE if btn_id == 0 else NiftiViewer.MODE_MEDICAL
         self._cb_radio.setEnabled(btn_id == 1)
@@ -1330,8 +1431,24 @@ class NiftiViewerWindow(QMainWindow):
                 f"[base] {name}  |  {shape[0]}×{shape[1]}×{shape[2]}"
                 f"  |  {sp[0]:.3f}×{sp[1]:.3f}×{sp[2]:.3f} mm  |  {code}")
             self._btn_overlay.setEnabled(True)
+            self._btn_screenshot.setEnabled(True)
         except Exception as exc:
             self._status.showMessage(f"Error: {exc}")
+            raise
+
+    def _take_screenshot(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Screenshot", "screenshot.png",
+            "PNG Images (*.png);;All Files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        try:
+            self.viewer.grab_screenshot(path)
+            self._status.showMessage(f"Screenshot saved: {path}")
+        except Exception as exc:
+            self._status.showMessage(f"Screenshot error: {exc}")
             raise
 
     def _add_overlay(self):
