@@ -52,8 +52,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPalette, QDoubleValidator
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSlider,
-    QSizePolicy, QFileDialog, QPushButton, QFrame, QSplitter, QStatusBar,
-    QMainWindow, QToolBar, QButtonGroup, QRadioButton, QCheckBox, QGroupBox,
+    QSizePolicy, QFileDialog, QPushButton, QFrame, QSplitter,
+    QButtonGroup, QRadioButton, QCheckBox, QGroupBox,
     QScrollArea, QComboBox, QToolButton, QLineEdit,
 )
 
@@ -1307,9 +1307,9 @@ class NiftiViewer(QWidget):
 # ── Main window ────────────────────────────────────────────────────────────
 
 TB_STYLE = f"""
-QToolBar {{
-    background:{BG_PANEL}; border-bottom:1px solid #333340;
-    spacing:6px; padding:4px 8px;
+QWidget#NiftiToolbar {{
+    background:{BG_PANEL};
+    border-bottom:1px solid #333340;
 }}
 QPushButton {{
     background:#2d2d38; color:{TEXT};
@@ -1327,46 +1327,54 @@ QGroupBox {{
 QGroupBox::title {{ subcontrol-origin:margin; left:6px; }}
 """
 
+# Thin separator for the toolbar (replaces QToolBar separator)
+def _tb_sep() -> QFrame:
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.VLine)
+    sep.setFixedWidth(1)
+    sep.setStyleSheet("background:#333340;")
+    return sep
 
-class NiftiViewerWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("NIfTI Viewer — Multi-Volume")
-        self.resize(1580, 600)
-        self._apply_palette()
-        self.viewer = NiftiViewer()
-        self.setCentralWidget(self.viewer)
-        # Route live WL updates to the layer panel readout labels
-        self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
-        self._build_toolbar()
-        self._status = QStatusBar()
-        self._status.setStyleSheet(
-            f"background:{BG_PANEL}; color:{TEXT_DIM}; font-size:11px;")
-        self.setStatusBar(self._status)
-        self._status.showMessage(
-            "Open a NIfTI file to begin.  "
-            "RMB-drag in any view to adjust windowing of the selected layer (W/L button).")
 
-    def _build_toolbar(self):
-        tb = QToolBar("Controls")
-        tb.setMovable(False)
+class NiftiViewerWindow(QWidget):
+    """
+    Self-contained NIfTI viewer widget.  Derives from QWidget so it can be
+    embedded directly in any parent layout of an existing application:
+
+        viewer_widget = NiftiViewerWindow(parent=some_parent)
+        some_layout.addWidget(viewer_widget)
+
+    All toolbar controls and the status label are plain child widgets laid
+    out in a QVBoxLayout — no QMainWindow, QToolBar, or QStatusBar involved.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"NiftiViewerWindow {{ background:{BG_DARK}; }}")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Toolbar ────────────────────────────────────────────────────
+        tb = QWidget(objectName="NiftiToolbar")
+        tb.setFixedHeight(44)
         tb.setStyleSheet(TB_STYLE)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        tb_lay = QHBoxLayout(tb)
+        tb_lay.setContentsMargins(8, 4, 8, 4)
+        tb_lay.setSpacing(6)
 
-        # Open base
         self._btn_open = QPushButton("  Open NIfTI…")
         self._btn_open.clicked.connect(self._open_base)
-        tb.addWidget(self._btn_open)
+        tb_lay.addWidget(self._btn_open)
 
-        # Add overlay
         self._btn_overlay = QPushButton("  Add overlay…")
         self._btn_overlay.setEnabled(False)
         self._btn_overlay.clicked.connect(self._add_overlay)
-        tb.addWidget(self._btn_overlay)
+        tb_lay.addWidget(self._btn_overlay)
 
-        tb.addSeparator()
+        tb_lay.addWidget(_tb_sep())
 
-        # Display mode
         mode_box = QGroupBox("Display mode")
         ml = QHBoxLayout(mode_box); ml.setContentsMargins(6,2,6,2); ml.setSpacing(12)
         self._rb_affine  = QRadioButton("Affine (native axes)")
@@ -1377,11 +1385,10 @@ class NiftiViewerWindow(QMainWindow):
         grp.addButton(self._rb_medical, 1)
         grp.idClicked.connect(self._on_mode)
         ml.addWidget(self._rb_affine); ml.addWidget(self._rb_medical)
-        tb.addWidget(mode_box)
+        tb_lay.addWidget(mode_box)
 
-        tb.addSeparator()
+        tb_lay.addWidget(_tb_sep())
 
-        # Convention
         conv_box = QGroupBox("Convention")
         cl = QHBoxLayout(conv_box); cl.setContentsMargins(6,2,6,2)
         self._cb_radio = QCheckBox("Radiological (flip L↔R)")
@@ -1389,11 +1396,10 @@ class NiftiViewerWindow(QMainWindow):
         self._cb_radio.stateChanged.connect(
             lambda s: self.viewer.set_radiological(bool(s)))
         cl.addWidget(self._cb_radio)
-        tb.addWidget(conv_box)
+        tb_lay.addWidget(conv_box)
 
-        tb.addSeparator()
+        tb_lay.addWidget(_tb_sep())
 
-        # View options
         view_box = QGroupBox("View")
         vl = QHBoxLayout(view_box); vl.setContentsMargins(6,2,6,2); vl.setSpacing(10)
         self._cb_crosshair = QCheckBox("Crosshairs")
@@ -1401,17 +1407,38 @@ class NiftiViewerWindow(QMainWindow):
         self._cb_crosshair.stateChanged.connect(
             lambda s: self.viewer.set_crosshair_visible(bool(s)))
         vl.addWidget(self._cb_crosshair)
-        tb.addWidget(view_box)
+        tb_lay.addWidget(view_box)
 
-        tb.addSeparator()
+        tb_lay.addWidget(_tb_sep())
 
-        # Screenshot
         self._btn_screenshot = QPushButton("  📷 Screenshot…")
-        self._btn_screenshot.setEnabled(True)
-        self._btn_screenshot.setToolTip(
-            "Save all three views side-by-side as a PNG")
+        self._btn_screenshot.setEnabled(False)
+        self._btn_screenshot.setToolTip("Save all three views side-by-side as a PNG")
         self._btn_screenshot.clicked.connect(self._take_screenshot)
-        tb.addWidget(self._btn_screenshot)
+        tb_lay.addWidget(self._btn_screenshot)
+
+        tb_lay.addStretch(1)
+        root.addWidget(tb)
+
+        # ── Viewer ─────────────────────────────────────────────────────
+        self.viewer = NiftiViewer(self)
+        self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
+        root.addWidget(self.viewer, 1)
+
+        # ── Status bar ─────────────────────────────────────────────────
+        self._status = QLabel(
+            "Open a NIfTI file to begin.  "
+            "RMB-drag in any view to adjust windowing of the selected layer (W/L button).")
+        self._status.setFixedHeight(22)
+        self._status.setStyleSheet(
+            f"background:{BG_PANEL}; color:{TEXT_DIM}; font-size:11px; "
+            f"padding: 0 8px; border-top:1px solid #333340;")
+        root.addWidget(self._status)
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _show_status(self, msg: str) -> None:
+        self._status.setText(msg)
 
     def _on_mode(self, btn_id: int):
         mode = NiftiViewer.MODE_AFFINE if btn_id == 0 else NiftiViewer.MODE_MEDICAL
@@ -1427,28 +1454,13 @@ class NiftiViewerWindow(QMainWindow):
         try:
             shape, sp, code = self.viewer.load_base(path)
             name = os.path.basename(path)
-            self._status.showMessage(
+            self._show_status(
                 f"[base] {name}  |  {shape[0]}×{shape[1]}×{shape[2]}"
                 f"  |  {sp[0]:.3f}×{sp[1]:.3f}×{sp[2]:.3f} mm  |  {code}")
             self._btn_overlay.setEnabled(True)
             self._btn_screenshot.setEnabled(True)
         except Exception as exc:
-            self._status.showMessage(f"Error: {exc}")
-            raise
-
-    def _take_screenshot(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Screenshot", "screenshot.png",
-            "PNG Images (*.png);;All Files (*)")
-        if not path:
-            return
-        if not path.lower().endswith(".png"):
-            path += ".png"
-        try:
-            self.viewer.grab_screenshot(path)
-            self._status.showMessage(f"Screenshot saved: {path}")
-        except Exception as exc:
-            self._status.showMessage(f"Screenshot error: {exc}")
+            self._show_status(f"Error: {exc}")
             raise
 
     def _add_overlay(self):
@@ -1461,20 +1473,27 @@ class NiftiViewerWindow(QMainWindow):
             shape, sp, code = self.viewer.add_overlay(path)
             name = os.path.basename(path)
             n = len(self.viewer._volumes) - 1
-            self._status.showMessage(
+            self._show_status(
                 f"[overlay {n}] {name}  |  {shape[0]}×{shape[1]}×{shape[2]}"
                 f"  |  {sp[0]:.3f}×{sp[1]:.3f}×{sp[2]:.3f} mm  |  {code}")
         except Exception as exc:
-            self._status.showMessage(f"Error: {exc}")
+            self._show_status(f"Error: {exc}")
             raise
 
-    def _apply_palette(self):
-        pal = QPalette()
-        pal.setColor(QPalette.ColorRole.Window,     QColor(BG_DARK))
-        pal.setColor(QPalette.ColorRole.WindowText, QColor(TEXT))
-        pal.setColor(QPalette.ColorRole.Base,       QColor(BG_PANEL))
-        pal.setColor(QPalette.ColorRole.Text,       QColor(TEXT))
-        QApplication.setPalette(pal)
+    def _take_screenshot(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Screenshot", "screenshot.png",
+            "PNG Images (*.png);;All Files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        try:
+            self.viewer.grab_screenshot(path)
+            self._show_status(f"Screenshot saved: {path}")
+        except Exception as exc:
+            self._show_status(f"Screenshot error: {exc}")
+            raise
 
 
 # ── Entry point ────────────────────────────────────────────────────────────
@@ -1482,18 +1501,24 @@ class NiftiViewerWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("NIfTI Viewer")
+
     win = NiftiViewerWindow()
+    win.setWindowTitle("NIfTI Viewer — Multi-Volume")
+    win.resize(1580, 620)
     win.show()
+
     # First positional arg = base, rest = overlays
     args = sys.argv[1:]
     if args:
         try:
             win.viewer.load_base(args[0])
             win._btn_overlay.setEnabled(True)
+            win._btn_screenshot.setEnabled(True)
             for path in args[1:]:
                 win.viewer.add_overlay(path)
         except Exception as exc:
-            win._status.showMessage(f"Error loading from command line: {exc}")
+            win._show_status(f"Error loading from command line: {exc}")
+
     sys.exit(app.exec())
 
 
