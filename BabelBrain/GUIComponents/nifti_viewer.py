@@ -160,11 +160,19 @@ class VolumeRecord:
     name:      str
     vtk_idx:   vtk.vtkImageData       # data in index/physical space
     vtk_xform: vtk.vtkTransform       # VTK physical → world (RAS)
-    lo:        float
-    hi:        float
+    lo:        float                  # data min (fixed, from file)
+    hi:        float                  # data max (fixed, from file)
+    wl_window: float = 0.             # current display window width (hi-lo at load)
+    wl_level:  float = 0.             # current display window centre
     opacity:   float = 1.0
     visible:   bool  = True
     cmap:      str   = "Grey"         # key into CMAPS
+
+    def __post_init__(self):
+        if self.wl_window == 0.:
+            self.wl_window = self.hi - self.lo or 1.
+        if self.wl_level == 0.:
+            self.wl_level = (self.hi + self.lo) / 2.
 
 
 # ── Affine / geometry helpers ──────────────────────────────────────────────
@@ -301,6 +309,114 @@ def _set_line(actor, p1, p2):
     pts.Modified(); poly.Modified()
 
 
+def _make_wl_style(on_wl_drag, on_wl_end, on_scroll) -> vtk.vtkInteractorStyle:
+    """
+    Custom interactor style for medical image viewing.
+
+    Uses vtkInteractorStyleUser as base (no built-in image interactions)
+    so we have complete control and VTK never touches any actor property.
+
+    Interactions
+    ------------
+    Left button drag        : pan
+    Right button drag       : window/level — on_wl_drag(dw, dl)
+                              dw = horizontal (window width)
+                              dl = vertical   (window centre/level)
+    Mouse wheel             : scroll slices — on_scroll(+1 or -1)
+    Ctrl + mouse wheel      : zoom (parallel scale ±10 %)
+    Middle button drag      : zoom
+    """
+    style = vtk.vtkInteractorStyleUser()
+
+    _s = {"rmb": False, "lmb": False, "mmb": False, "lx": 0, "ly": 0}
+
+    def _pos(obj):
+        return obj.GetInteractor().GetEventPosition()
+
+    def _pan(obj, dx, dy):
+        iren  = obj.GetInteractor()
+        rw    = iren.GetRenderWindow()
+        ren   = rw.GetRenderers().GetFirstRenderer()
+        cam   = ren.GetActiveCamera()
+        fp    = np.array(cam.GetFocalPoint())
+        pos   = np.array(cam.GetPosition())
+        h     = rw.GetSize()[1] or 1
+        wpp   = 2.0 * cam.GetParallelScale() / h
+        up    = np.array(cam.GetViewUp())
+        vpn   = np.array(cam.GetViewPlaneNormal())
+        right = np.cross(up, -vpn)
+        right /= (np.linalg.norm(right) + 1e-9)
+        up    /= (np.linalg.norm(up)    + 1e-9)
+        delta  = (-dx * right - dy * up) * wpp
+        cam.SetFocalPoint(*(fp  + delta).tolist())
+        cam.SetPosition( *(pos + delta).tolist())
+        rw.Render()
+
+    def _zoom(obj, factor):
+        iren = obj.GetInteractor()
+        rw   = iren.GetRenderWindow()
+        ren  = rw.GetRenderers().GetFirstRenderer()
+        cam  = ren.GetActiveCamera()
+        cam.SetParallelScale(max(0.1, cam.GetParallelScale() * factor))
+        rw.Render()
+
+    def _on_lmb_press(obj, event):
+        _s["lmb"] = True; _s["lx"], _s["ly"] = _pos(obj)
+
+    def _on_lmb_release(obj, event):
+        _s["lmb"] = False
+
+    def _on_rmb_press(obj, event):
+        _s["rmb"] = True; _s["lx"], _s["ly"] = _pos(obj)
+
+    def _on_rmb_release(obj, event):
+        _s["rmb"] = False; on_wl_end()
+
+    def _on_mmb_press(obj, event):
+        _s["mmb"] = True; _s["lx"], _s["ly"] = _pos(obj)
+
+    def _on_mmb_release(obj, event):
+        _s["mmb"] = False
+
+    def _on_move(obj, event):
+        x, y = _pos(obj)
+        dx = x - _s["lx"]; dy = y - _s["ly"]
+        _s["lx"], _s["ly"] = x, y
+        if _s["rmb"]:
+            # Pass normalised fractions of viewport — NiftiViewer scales by range
+            w, h = obj.GetInteractor().GetRenderWindow().GetSize()
+            on_wl_drag(dx / (w or 1), dy / (h or 1))
+        elif _s["lmb"]:
+            _pan(obj, dx, dy)
+        elif _s["mmb"]:
+            _zoom(obj, 1.0 - dy * 0.01)
+
+    def _on_wheel_fwd(obj, event):
+        iren = obj.GetInteractor()
+        if iren.GetControlKey():
+            _zoom(obj, 0.9)
+        else:
+            on_scroll(-1)   # scroll toward lower-index slice
+
+    def _on_wheel_bwd(obj, event):
+        iren = obj.GetInteractor()
+        if iren.GetControlKey():
+            _zoom(obj, 1.1)
+        else:
+            on_scroll(+1)
+
+    style.AddObserver("LeftButtonPressEvent",     _on_lmb_press)
+    style.AddObserver("LeftButtonReleaseEvent",   _on_lmb_release)
+    style.AddObserver("RightButtonPressEvent",    _on_rmb_press)
+    style.AddObserver("RightButtonReleaseEvent",  _on_rmb_release)
+    style.AddObserver("MiddleButtonPressEvent",   _on_mmb_press)
+    style.AddObserver("MiddleButtonReleaseEvent", _on_mmb_release)
+    style.AddObserver("MouseMoveEvent",           _on_move)
+    style.AddObserver("MouseWheelForwardEvent",   _on_wheel_fwd)
+    style.AddObserver("MouseWheelBackwardEvent",  _on_wheel_bwd)
+    return style
+
+
 # ── SliceViewport ──────────────────────────────────────────────────────────
 
 class SliceViewport(QFrame):
@@ -371,7 +487,28 @@ class SliceViewport(QFrame):
         self.renderer.AddActor(self._cross_v)
 
         self.renderer.GetActiveCamera().ParallelProjectionOn()
-        rw.GetInteractor().SetInteractorStyle(vtk.vtkInteractorStyleImage())
+
+        # Placeholder callbacks — replaced by set_wl_callbacks()
+        self._wl_drag_cb = lambda dw, dl: None
+        self._wl_end_cb  = lambda: None
+
+        def _on_scroll(delta):
+            """delta = ±1; moves slider by one step."""
+            new_val = self._slider.value() + delta
+            new_val = max(self._slider.minimum(), min(self._slider.maximum(), new_val))
+            self._slider.setValue(new_val)   # triggers _on_slider → _move_to_slice
+
+        style = _make_wl_style(
+            on_wl_drag=lambda dw, dl: self._wl_drag_cb(dw, dl),
+            on_wl_end=lambda: self._wl_end_cb(),
+            on_scroll=_on_scroll,
+        )
+        rw.GetInteractor().SetInteractorStyle(style)
+
+    def set_wl_callbacks(self, on_drag, on_end) -> None:
+        """Called by NiftiViewer to route WL drag to the selected volume."""
+        self._wl_drag_cb = on_drag
+        self._wl_end_cb  = on_end
 
     def _make_slice_actor(self) -> tuple[vtk.vtkImageSlice, vtk.vtkImageProperty]:
         mapper = vtk.vtkImageResliceMapper()
@@ -457,12 +594,21 @@ class SliceViewport(QFrame):
         self.vtk_widget.GetRenderWindow().Render()
 
     def update_layer_property(self, layer_idx: int, rec: VolumeRecord) -> None:
-        """Update opacity / visibility / cmap for a layer."""
+        """Update opacity / visibility / cmap / wl for a layer."""
         if layer_idx >= len(self._layers):
             return
         actor, prop = self._layers[layer_idx]
         self._apply_volume_property(prop, rec)
         actor.SetVisibility(rec.visible)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def set_wl(self, layer_idx: int, window: float, level: float) -> None:
+        """Fast path: update only window/level for a layer (called during drag)."""
+        if layer_idx >= len(self._layers):
+            return
+        _, prop = self._layers[layer_idx]
+        prop.SetColorWindow(window)
+        prop.SetColorLevel(level)
         self.vtk_widget.GetRenderWindow().Render()
 
     def set_slice(self, index: int) -> None:
@@ -492,8 +638,8 @@ class SliceViewport(QFrame):
 
     def _apply_volume_property(self, prop: vtk.vtkImageProperty, rec: VolumeRecord):
         prop.SetOpacity(rec.opacity if rec.visible else 0.0)
-        prop.SetColorWindow(rec.hi - rec.lo or 1.)
-        prop.SetColorLevel((rec.hi + rec.lo) / 2.)
+        prop.SetColorWindow(rec.wl_window)
+        prop.SetColorLevel(rec.wl_level)
         lut = _make_lut(CMAPS.get(rec.cmap), rec.lo, rec.hi)
         prop.SetLookupTable(lut)
 
@@ -540,18 +686,42 @@ class SliceViewport(QFrame):
 class LayerRow(QWidget):
     """
     One row in the layer panel representing a single loaded volume.
-    Emits signals when opacity / cmap / visibility change.
+    Signals:
+      opacity_changed    (vol_idx, float 0..1)
+      cmap_changed       (vol_idx, str)
+      visibility_changed (vol_idx, bool)
+      remove_requested   (vol_idx)
+      wl_select          (vol_idx)  — user clicked the WL target button
     """
-    opacity_changed    = Signal(int, float)    # (vol_idx, opacity 0..1)
-    cmap_changed       = Signal(int, str)      # (vol_idx, cmap_name)
-    visibility_changed = Signal(int, bool)     # (vol_idx, visible)
-    remove_requested   = Signal(int)           # (vol_idx)
+    opacity_changed    = Signal(int, float)
+    cmap_changed       = Signal(int, str)
+    visibility_changed = Signal(int, bool)
+    remove_requested   = Signal(int)
+    wl_select          = Signal(int)
 
     def __init__(self, vol_idx: int, rec: VolumeRecord, parent=None):
         super().__init__(parent)
         self._vol_idx = vol_idx
         self._is_base = (vol_idx == 0)
         self._build_ui(rec)
+
+    def set_wl_active(self, active: bool) -> None:
+        """Highlight this row's WL button as the current WL target."""
+        color = VOL_COLORS[self._vol_idx % len(VOL_COLORS)]
+        if active:
+            self._wl_btn.setStyleSheet(f"""
+                QToolButton {{ border:none; background:{color}; color:#0d0d0f;
+                               border-radius:3px; font-size:10px; font-weight:bold; }}
+            """)
+        else:
+            self._wl_btn.setStyleSheet(f"""
+                QToolButton {{ border:1px solid #444455; background:transparent;
+                               color:{TEXT_DIM}; border-radius:3px; font-size:10px; }}
+                QToolButton:hover {{ border-color:{color}; color:{color}; }}
+            """)
+
+    def update_wl_readout(self, window: float, level: float) -> None:
+        self._wl_lbl.setText(f"W {window:.0f}  L {level:.0f}")
 
     def _build_ui(self, rec: VolumeRecord):
         color = VOL_COLORS[self._vol_idx % len(VOL_COLORS)]
@@ -568,9 +738,8 @@ class LayerRow(QWidget):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        # ── Header row: eye | name | [×] ──────────────────────────────
-        hrow = QHBoxLayout()
-        hrow.setSpacing(6)
+        # ── Header row: eye | WL-target | name | [×] ──────────────────
+        hrow = QHBoxLayout(); hrow.setSpacing(5)
 
         # Eye / visibility toggle
         self._eye_btn = QToolButton()
@@ -585,6 +754,13 @@ class LayerRow(QWidget):
         self._eye_btn.toggled.connect(
             lambda checked: self.visibility_changed.emit(self._vol_idx, checked))
         hrow.addWidget(self._eye_btn)
+
+        # WL target button — clicking makes this the active WL volume
+        self._wl_btn = QToolButton()
+        self._wl_btn.setText("W/L")
+        self._wl_btn.setFixedSize(30, 22)
+        self._wl_btn.clicked.connect(lambda: self.wl_select.emit(self._vol_idx))
+        hrow.addWidget(self._wl_btn)
 
         lbl = QLabel(rec.name)
         lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:bold;")
@@ -604,6 +780,16 @@ class LayerRow(QWidget):
             hrow.addWidget(rm_btn)
 
         lay.addLayout(hrow)
+
+        # ── W/L readout ────────────────────────────────────────────────
+        self._wl_lbl = QLabel(
+            f"W {rec.wl_window:.0f}  L {rec.wl_level:.0f}")
+        self._wl_lbl.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:10px; font-family:monospace;")
+        lay.addWidget(self._wl_lbl)
+
+        # Style the WL button initially (inactive)
+        self.set_wl_active(False)
 
         # ── Opacity row (overlays only) ────────────────────────────────
         if not self._is_base:
@@ -666,16 +852,16 @@ class LayerRow(QWidget):
 class LayerPanel(QWidget):
     """
     Scrollable sidebar listing all loaded volumes as LayerRows.
-    Emits the same signals as LayerRow, forwarding vol_idx.
     """
     opacity_changed    = Signal(int, float)
     cmap_changed       = Signal(int, str)
     visibility_changed = Signal(int, bool)
     remove_requested   = Signal(int)
+    wl_select_changed  = Signal(int)    # (vol_idx) — WL target changed
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(220)
+        self.setFixedWidth(230)
         self.setStyleSheet(f"background:{BG_PANEL};")
 
         outer = QVBoxLayout(self)
@@ -705,6 +891,7 @@ class LayerPanel(QWidget):
         scroll.setWidget(self._container)
 
         self._rows: list[LayerRow] = []
+        self._active_wl: int = 0   # which row has WL active
 
     def add_row(self, vol_idx: int, rec: VolumeRecord) -> None:
         row = LayerRow(vol_idx, rec, self._container)
@@ -712,9 +899,11 @@ class LayerPanel(QWidget):
         row.cmap_changed.connect(self.cmap_changed)
         row.visibility_changed.connect(self.visibility_changed)
         row.remove_requested.connect(self.remove_requested)
-        # Insert before the stretch
+        row.wl_select.connect(self._on_row_wl_select)
         self._vlay.insertWidget(self._vlay.count() - 1, row)
         self._rows.append(row)
+        # Auto-select WL on the newest row
+        self._set_active_wl(vol_idx)
 
     def remove_row(self, vol_idx: int) -> None:
         for row in self._rows:
@@ -723,9 +912,27 @@ class LayerPanel(QWidget):
                 row.deleteLater()
                 self._rows.remove(row)
                 break
-        # Re-number remaining rows' internal vol_idx
         for i, row in enumerate(self._rows):
             row._vol_idx = i
+        # Fall back to base if active row was removed
+        if self._active_wl >= len(self._rows):
+            self._set_active_wl(0)
+
+    def update_wl_readout(self, vol_idx: int, window: float, level: float) -> None:
+        for row in self._rows:
+            if row._vol_idx == vol_idx:
+                row.update_wl_readout(window, level)
+                break
+
+    def _on_row_wl_select(self, vol_idx: int) -> None:
+        self._set_active_wl(vol_idx)
+        self.wl_select_changed.emit(vol_idx)
+
+    def _set_active_wl(self, vol_idx: int) -> None:
+        self._active_wl = vol_idx
+        for row in self._rows:
+            row.set_wl_active(row._vol_idx == vol_idx)
+        self.wl_select_changed.emit(vol_idx)
 
 
 # ── NiftiViewer ────────────────────────────────────────────────────────────
@@ -737,22 +944,29 @@ class NiftiViewer(QWidget):
     Volume 0 (base) drives camera geometry in both AFFINE and MEDICAL modes.
     Overlay volumes (indices 1+) are rendered with their own affine transforms
     so that different-grid overlays are still correctly co-registered.
+
+    Window/level dragging (right-mouse-button drag in any viewport) is routed
+    to the currently *selected* volume (highlighted in the layer panel).
     """
 
     MODE_AFFINE  = "affine"
     MODE_MEDICAL = "medical"
 
+    # Emitted after WL changes so the layer panel can update its readout
+    wl_updated = Signal(int, float, float)   # (vol_idx, window, level)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._volumes:     list[VolumeRecord] = []
-        self._base_affine: np.ndarray | None = None
-        self._base_shape:  tuple | None = None
-        self._ras_min:     np.ndarray | None = None
-        self._ras_max:     np.ndarray | None = None
-        self._mode         = self.MODE_AFFINE
-        self._radiological = False
-        self._geoms:       list[PlaneGeometry] = []
-        self._half_len:    float = 100.
+        self._volumes:       list[VolumeRecord] = []
+        self._base_affine:   np.ndarray | None = None
+        self._base_shape:    tuple | None = None
+        self._ras_min:       np.ndarray | None = None
+        self._ras_max:       np.ndarray | None = None
+        self._mode           = self.MODE_AFFINE
+        self._radiological   = False
+        self._geoms:         list[PlaneGeometry] = []
+        self._half_len:      float = 100.
+        self._selected_vol:  int = 0   # index of volume receiving WL drags
         self._build_ui()
 
     def _build_ui(self):
@@ -773,6 +987,7 @@ class NiftiViewer(QWidget):
         for i in range(3):
             vp = SliceViewport(i, self)
             vp.slice_changed.connect(self._on_slice_changed)
+            vp.set_wl_callbacks(self._on_wl_drag, self._on_wl_end)
             self._vps.append(vp)
             spl.addWidget(vp)
         spl.setSizes([450, 450, 450])
@@ -785,6 +1000,7 @@ class NiftiViewer(QWidget):
         self._layer_panel.cmap_changed.connect(self._on_cmap_changed)
         self._layer_panel.visibility_changed.connect(self._on_visibility_changed)
         self._layer_panel.remove_requested.connect(self._on_remove_requested)
+        self._layer_panel.wl_select_changed.connect(self._on_wl_select_changed)
         root.addWidget(self._layer_panel)
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -806,6 +1022,7 @@ class NiftiViewer(QWidget):
         self._layer_panel._rows.clear()
         self._layer_panel.add_row(0, rec)
 
+        self._selected_vol = 0
         self._refresh()
         return shape, zooms, code
 
@@ -835,6 +1052,33 @@ class NiftiViewer(QWidget):
         self._radiological = enabled
         if self._mode == self.MODE_MEDICAL and self._volumes:
             self._refresh()
+
+    # ── Window / level drag ───────────────────────────────────────────────
+
+    def _on_wl_select_changed(self, vol_idx: int) -> None:
+        self._selected_vol = vol_idx
+
+    def _on_wl_drag(self, dw_norm: float, dl_norm: float) -> None:
+        """
+        dw_norm, dl_norm are drag distances normalised to [-1..+1] by viewport size.
+        We scale them by the volume's full data range — identical to vtkInteractorStyleImage:
+          window += dw_norm * range
+          level  -= dl_norm * range   (VTK: up = decrease level, down = increase)
+        This gives a natural feel: dragging the full width changes window by one full range.
+        """
+        idx = self._selected_vol
+        if idx >= len(self._volumes):
+            return
+        rec   = self._volumes[idx]
+        scale = rec.hi - rec.lo or 1.0
+        rec.wl_window = max(1.0, rec.wl_window + dw_norm * scale)
+        rec.wl_level  = rec.wl_level  - dl_norm * scale
+        for vp in self._vps:
+            vp.set_wl(idx, rec.wl_window, rec.wl_level)
+        self.wl_updated.emit(idx, rec.wl_window, rec.wl_level)
+
+    def _on_wl_end(self) -> None:
+        pass   # could trigger a full property refresh if needed
 
     # ── Layer signal handlers ─────────────────────────────────────────────
 
@@ -941,13 +1185,16 @@ class NiftiViewerWindow(QMainWindow):
         self._apply_palette()
         self.viewer = NiftiViewer()
         self.setCentralWidget(self.viewer)
+        # Route live WL updates to the layer panel readout labels
+        self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
         self._build_toolbar()
         self._status = QStatusBar()
         self._status.setStyleSheet(
             f"background:{BG_PANEL}; color:{TEXT_DIM}; font-size:11px;")
         self.setStatusBar(self._status)
-        self._status.showMessage("Open a NIfTI file to begin.  "
-                                 "Add overlays with 'Add overlay…'")
+        self._status.showMessage(
+            "Open a NIfTI file to begin.  "
+            "RMB-drag in any view to adjust windowing of the selected layer (W/L button).")
 
     def _build_toolbar(self):
         tb = QToolBar("Controls")
