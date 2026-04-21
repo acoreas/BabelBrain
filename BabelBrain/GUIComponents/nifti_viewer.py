@@ -49,12 +49,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPalette, QIcon, QPixmap
+from PySide6.QtGui import QColor, QPalette, QDoubleValidator
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSlider,
     QSizePolicy, QFileDialog, QPushButton, QFrame, QSplitter, QStatusBar,
     QMainWindow, QToolBar, QButtonGroup, QRadioButton, QCheckBox, QGroupBox,
-    QScrollArea, QComboBox, QToolButton,
+    QScrollArea, QComboBox, QToolButton, QLineEdit,
 )
 
 import vtk
@@ -106,20 +106,32 @@ def _np4(m: np.ndarray) -> vtk.vtkMatrix4x4:
     return mat
 
 
-def _make_lut(name: str | None, lo: float, hi: float) -> vtk.vtkLookupTable:
+def _make_lut(
+    name: str | None,
+    lo: float,
+    hi: float,
+    cutoff: float | None = None,
+) -> vtk.vtkLookupTable:
+    """
+    Build a vtkLookupTable for the given colour map.
+    If cutoff is not None, all scalar values < cutoff are mapped to alpha=0
+    (fully transparent), effectively masking them out.  Values >= cutoff use
+    the normal colour map with alpha=1.
+    """
+    N = 1024   # enough entries for smooth gradients and a sharp cutoff edge
     lut = vtk.vtkLookupTable()
     lut.SetRange(lo, hi)
-    lut.SetNumberOfColors(256)
+    lut.SetNumberOfTableValues(N)
 
-    if name is None or name == "grey":          # greyscale
+    if name is None or name == "grey":
         lut.SetSaturationRange(0, 0)
         lut.SetHueRange(0, 0)
         lut.SetValueRange(0, 1)
-    elif name == "hot":                          # black→red→yellow→white
+    elif name == "hot":
         lut.SetHueRange(0.0, 0.1667)
         lut.SetSaturationRange(1, 0)
         lut.SetValueRange(0.5, 1)
-    elif name == "cool":                         # cyan→magenta
+    elif name == "cool":
         lut.SetHueRange(0.5, 0.833)
         lut.SetSaturationRange(1, 1)
         lut.SetValueRange(1, 1)
@@ -137,6 +149,17 @@ def _make_lut(name: str | None, lo: float, hi: float) -> vtk.vtkLookupTable:
         lut.SetValueRange(0, 1)
 
     lut.Build()
+
+    # Apply cutoff: zero the alpha of every entry whose scalar < cutoff.
+    # We manipulate the RGBA table directly after Build().
+    if cutoff is not None and hi > lo:
+        span = hi - lo
+        for i in range(N):
+            scalar = lo + (i / (N - 1)) * span
+            if scalar < cutoff:
+                r, g, b, _ = lut.GetTableValue(i)
+                lut.SetTableValue(i, r, g, b, 0.0)   # fully transparent
+
     return lut
 
 
@@ -167,6 +190,7 @@ class VolumeRecord:
     opacity:   float = 1.0
     visible:   bool  = True
     cmap:      str   = "Grey"         # key into CMAPS
+    cutoff:    float | None = None    # values < cutoff rendered transparent
 
     def __post_init__(self):
         if self.wl_window == 0.:
@@ -640,8 +664,11 @@ class SliceViewport(QFrame):
         prop.SetOpacity(rec.opacity if rec.visible else 0.0)
         prop.SetColorWindow(rec.wl_window)
         prop.SetColorLevel(rec.wl_level)
-        lut = _make_lut(CMAPS.get(rec.cmap), rec.lo, rec.hi)
+        lut = _make_lut(CMAPS.get(rec.cmap), rec.lo, rec.hi, rec.cutoff)
+        lut.SetAlphaRange(1.0, 1.0)   # per-entry alpha from SetTableValue is honoured
         prop.SetLookupTable(lut)
+        # UseLookupTableScalarRange keeps window/level separate from LUT range
+        prop.UseLookupTableScalarRangeOff()
 
     def _focal_for(self, index: int) -> np.ndarray:
         mid = self._pg.n // 2
@@ -698,6 +725,7 @@ class LayerRow(QWidget):
     visibility_changed = Signal(int, bool)
     remove_requested   = Signal(int)
     wl_select          = Signal(int)
+    cutoff_changed     = Signal(int, object)   # (vol_idx, float | None)
 
     def __init__(self, vol_idx: int, rec: VolumeRecord, parent=None):
         super().__init__(parent)
@@ -766,6 +794,40 @@ class LayerRow(QWidget):
         lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:bold;")
         lbl.setToolTip(rec.name)
         hrow.addWidget(lbl, 1)
+
+        # Cutoff threshold input ─────────────────────────────────────────
+        co_lbl = QLabel("≥")
+        co_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        hrow.addWidget(co_lbl)
+
+        self._cutoff_edit = QLineEdit()
+        self._cutoff_edit.setPlaceholderText("cutoff")
+        self._cutoff_edit.setFixedWidth(56)
+        self._cutoff_edit.setFixedHeight(22)
+        self._cutoff_edit.setValidator(QDoubleValidator())
+        self._cutoff_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background:#1a1a22; color:{color};
+                border:1px solid #444455; border-radius:3px;
+                padding:0 4px; font-size:11px; font-family:monospace;
+            }}
+            QLineEdit:focus {{ border-color:{color}; }}
+        """)
+        self._cutoff_edit.setToolTip(
+            "Mask values below this threshold (leave empty to disable)")
+
+        def _on_cutoff_changed():
+            txt = self._cutoff_edit.text().strip()
+            if txt == "":
+                self.cutoff_changed.emit(self._vol_idx, None)
+            else:
+                try:
+                    self.cutoff_changed.emit(self._vol_idx, float(txt))
+                except ValueError:
+                    pass
+
+        self._cutoff_edit.editingFinished.connect(_on_cutoff_changed)
+        hrow.addWidget(self._cutoff_edit)
 
         if not self._is_base:
             rm_btn = QToolButton()
@@ -858,6 +920,7 @@ class LayerPanel(QWidget):
     visibility_changed = Signal(int, bool)
     remove_requested   = Signal(int)
     wl_select_changed  = Signal(int)    # (vol_idx) — WL target changed
+    cutoff_changed     = Signal(int, object)   # (vol_idx, float | None)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -900,6 +963,7 @@ class LayerPanel(QWidget):
         row.visibility_changed.connect(self.visibility_changed)
         row.remove_requested.connect(self.remove_requested)
         row.wl_select.connect(self._on_row_wl_select)
+        row.cutoff_changed.connect(self.cutoff_changed)
         self._vlay.insertWidget(self._vlay.count() - 1, row)
         self._rows.append(row)
         # Auto-select WL on the newest row
@@ -1001,6 +1065,7 @@ class NiftiViewer(QWidget):
         self._layer_panel.visibility_changed.connect(self._on_visibility_changed)
         self._layer_panel.remove_requested.connect(self._on_remove_requested)
         self._layer_panel.wl_select_changed.connect(self._on_wl_select_changed)
+        self._layer_panel.cutoff_changed.connect(self._on_cutoff_changed)
         root.addWidget(self._layer_panel)
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -1093,6 +1158,13 @@ class NiftiViewer(QWidget):
         if vol_idx >= len(self._volumes):
             return
         self._volumes[vol_idx].cmap = cmap
+        for vp in self._vps:
+            vp.update_layer_property(vol_idx, self._volumes[vol_idx])
+
+    def _on_cutoff_changed(self, vol_idx: int, cutoff) -> None:
+        if vol_idx >= len(self._volumes):
+            return
+        self._volumes[vol_idx].cutoff = cutoff   # float or None
         for vp in self._vps:
             vp.update_layer_property(vol_idx, self._volumes[vol_idx])
 
