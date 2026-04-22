@@ -85,11 +85,12 @@ AFFINE_NAMES  = ["Slice k  (axial-like)", "Slice i  (sagittal-like)", "Slice j  
 MEDICAL_NAMES = ["Axial", "Coronal", "Sagittal"]
 
 CMAPS = {
-    "Grey":  None,          # built below: black→white
+    "Grey":  None,          # black→white
     "Hot":   "hot",
     "Cool":  "cool",
     "Green": "green",
     "Red":   "red",
+    "Jet":   "jet",         # blue→cyan→green→yellow→red
 }
 
 
@@ -123,42 +124,67 @@ def _make_lut(
     lut.SetRange(lo, hi)
     lut.SetNumberOfTableValues(N)
 
-    if name is None or name == "grey":
-        lut.SetSaturationRange(0, 0)
-        lut.SetHueRange(0, 0)
-        lut.SetValueRange(0, 1)
-    elif name == "hot":
-        lut.SetHueRange(0.0, 0.1667)
-        lut.SetSaturationRange(1, 0)
-        lut.SetValueRange(0.5, 1)
-    elif name == "cool":
-        lut.SetHueRange(0.5, 0.833)
-        lut.SetSaturationRange(1, 1)
-        lut.SetValueRange(1, 1)
-    elif name == "green":
-        lut.SetHueRange(0.333, 0.333)
-        lut.SetSaturationRange(0, 1)
-        lut.SetValueRange(0, 1)
-    elif name == "red":
-        lut.SetHueRange(0.0, 0.0)
-        lut.SetSaturationRange(0, 1)
-        lut.SetValueRange(0, 1)
+    if name == "jet":
+        # Jet is piecewise-linear RGB — cannot be expressed via VTK's HSV ranges.
+        # Interpolate the canonical Matplotlib Jet control points directly.
+        jet_cps = [        # (t,   R,    G,    B)
+            (0.000, 0.000, 0.000, 0.500),
+            (0.125, 0.000, 0.000, 1.000),
+            (0.375, 0.000, 1.000, 1.000),
+            (0.625, 1.000, 1.000, 0.000),
+            (0.875, 1.000, 0.000, 0.000),
+            (1.000, 0.500, 0.000, 0.000),
+        ]
+        # Build() allocates the internal table; we overwrite every entry below.
+        lut.Build()
+        for i in range(N):
+            t = i / (N - 1)
+            for k in range(len(jet_cps) - 1):
+                t0, r0, g0, b0 = jet_cps[k]
+                t1, r1, g1, b1 = jet_cps[k + 1]
+                if t0 <= t <= t1:
+                    f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+                    lut.SetTableValue(i,
+                                      r0 + f * (r1 - r0),
+                                      g0 + f * (g1 - g0),
+                                      b0 + f * (b1 - b0),
+                                      1.0)
+                    break
     else:
-        lut.SetSaturationRange(0, 0)
-        lut.SetHueRange(0, 0)
-        lut.SetValueRange(0, 1)
-
-    lut.Build()
+        if name is None or name == "grey":
+            lut.SetSaturationRange(0, 0)
+            lut.SetHueRange(0, 0)
+            lut.SetValueRange(0, 1)
+        elif name == "hot":
+            lut.SetHueRange(0.0, 0.1667)
+            lut.SetSaturationRange(1, 0)
+            lut.SetValueRange(0.5, 1)
+        elif name == "cool":
+            lut.SetHueRange(0.5, 0.833)
+            lut.SetSaturationRange(1, 1)
+            lut.SetValueRange(1, 1)
+        elif name == "green":
+            lut.SetHueRange(0.333, 0.333)
+            lut.SetSaturationRange(0, 1)
+            lut.SetValueRange(0, 1)
+        elif name == "red":
+            lut.SetHueRange(0.0, 0.0)
+            lut.SetSaturationRange(0, 1)
+            lut.SetValueRange(0, 1)
+        else:
+            lut.SetSaturationRange(0, 0)
+            lut.SetHueRange(0, 0)
+            lut.SetValueRange(0, 1)
+        lut.Build()
 
     # Apply cutoff: zero the alpha of every entry whose scalar < cutoff.
-    # We manipulate the RGBA table directly after Build().
     if cutoff is not None and hi > lo:
         span = hi - lo
         for i in range(N):
             scalar = lo + (i / (N - 1)) * span
             if scalar < cutoff:
                 r, g, b, _ = lut.GetTableValue(i)
-                lut.SetTableValue(i, r, g, b, 0.0)   # fully transparent
+                lut.SetTableValue(i, r, g, b, 0.0)
 
     return lut
 
@@ -235,11 +261,17 @@ def numpy_to_vtk_index(data: np.ndarray, spacing: np.ndarray) -> vtk.vtkImageDat
     return img
 
 
-def load_volume_record(path: str) -> tuple[VolumeRecord, tuple, tuple, str]:
+def load_volume_record(ni_path: object, inname='') -> tuple[VolumeRecord, tuple, tuple, str]:
     """Load a NIfTI file and return a VolumeRecord + metadata."""
     if nib is None:
         raise ImportError("nibabel is required: pip install nibabel")
-    img  = nib.load(path)
+    if type(ni_path) is str:
+        img  = nib.load(ni_path)
+        name      = os.path.basename(ni_path)
+    else:
+        assert(type(ni_path)  in [nib.nifti1.Nifti1Image,nib.nifti2.Nifti2Image] )
+        img = ni_path
+        name      = inname
     data = np.asarray(img.dataobj, dtype=np.float32)
     if data.ndim == 4:
         data = data[..., 0]
@@ -251,7 +283,7 @@ def load_volume_record(path: str) -> tuple[VolumeRecord, tuple, tuple, str]:
     lo, hi = float(data.min()), float(data.max())
 
     rec = VolumeRecord(
-        name      = os.path.basename(path),
+        name      = name,
         vtk_idx   = numpy_to_vtk_index(data, sp),
         vtk_xform = _make_vtk_transform(affine, sp),
         lo        = lo,
@@ -368,7 +400,7 @@ def _make_wl_style(on_wl_drag, on_wl_end, on_scroll) -> vtk.vtkInteractorStyle:
         wpp   = 2.0 * cam.GetParallelScale() / h
         up    = np.array(cam.GetViewUp())
         vpn   = np.array(cam.GetViewPlaneNormal())
-        right = np.cross(up, -vpn)
+        right = np.cross(up, vpn)
         right /= (np.linalg.norm(right) + 1e-9)
         up    /= (np.linalg.norm(up)    + 1e-9)
         delta  = (-dx * right - dy * up) * wpp
@@ -494,6 +526,7 @@ class SliceViewport(QFrame):
         self._slider.setFixedHeight(24)
         self._slider.valueChanged.connect(self._on_slider)
         lay.addWidget(self._slider)
+        self.setFixedWidth(300)
 
     def set_title(self, t):
         self._lbl_title.setText(t.upper())
@@ -533,6 +566,22 @@ class SliceViewport(QFrame):
         """Called by NiftiViewer to route WL drag to the selected volume."""
         self._wl_drag_cb = on_drag
         self._wl_end_cb  = on_end
+
+    def reset_camera(self) -> None:
+        """
+        Restore the default camera (pan, zoom) and slider position.
+        Does not touch image data or WL — those are reset by NiftiViewer.
+        """
+        if self._pg is None:
+            return
+        mid = self._pg.n // 2
+        self._slider.blockSignals(True)
+        self._slider.setValue(mid)
+        self._slider.blockSignals(False)
+        self._current_slice = mid
+        self._lbl_slice.setText(f"{mid+1} / {self._pg.n}")
+        self._init_camera(mid)
+        self.vtk_widget.GetRenderWindow().Render()
 
     def _make_slice_actor(self) -> tuple[vtk.vtkImageSlice, vtk.vtkImageProperty]:
         mapper = vtk.vtkImageResliceMapper()
@@ -667,6 +716,7 @@ class SliceViewport(QFrame):
             self._cross_h.VisibilityOff()
             self._cross_v.VisibilityOff()
         self.vtk_widget.GetRenderWindow().Render()
+        
 
     # ── Internals ─────────────────────────────────────────────────────────
 
@@ -703,10 +753,22 @@ class SliceViewport(QFrame):
     def _move_to_slice(self, index: int) -> None:
         if self._pg is None:
             return
-        old_fp = np.array(self.renderer.GetActiveCamera().GetFocalPoint())
-        new_fp = self._focal_for(index)
-        delta  = new_fp - old_fp
-        cam    = self.renderer.GetActiveCamera()
+        cam = self.renderer.GetActiveCamera()
+        # Compute how far to move along the slice normal.
+        # We project the current focal point onto the normal to find its current
+        # normal-axis position, then compute the delta to the target slice's
+        # normal-axis position.  This leaves the lateral (panned) offset
+        # completely untouched — only the depth along the normal changes.
+        normal = self._pg.normal
+        target_normal_pos = (
+            self._pg.centre
+            + (index - self._pg.n // 2) * self._pg.step * normal
+        )
+        old_fp = np.array(cam.GetFocalPoint())
+        current_depth = np.dot(old_fp,  normal)
+        target_depth  = np.dot(target_normal_pos, normal)
+        delta = (target_depth - current_depth) * normal
+
         cam.SetFocalPoint(*(old_fp + delta).tolist())
         cam.SetPosition(*(np.array(cam.GetPosition()) + delta).tolist())
         self._current_slice = index
@@ -716,6 +778,40 @@ class SliceViewport(QFrame):
     def _on_slider(self, value: int) -> None:
         self._move_to_slice(value)
         self.slice_changed.emit(self.plane_idx, value)
+
+
+# ── ElidedLabel ────────────────────────────────────────────────────────────
+
+class ElidedLabel(QLabel):
+    """
+    A QLabel that elides (truncates with '…') its text when the available
+    width is too narrow to show it in full, rather than expanding the parent
+    layout.  The full text is always available as the tooltip.
+
+    sizeHint() returns a compact width (just the minimum) so the label never
+    forces the containing layout to grow.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setToolTip(text)
+        # Tell Qt this widget accepts any width — it won't push for more room
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+
+    def setText(self, text: str) -> None:        # type: ignore[override]
+        self._full_text = text
+        self.setToolTip(text)
+        super().setText(text)
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtGui import QPainter
+        painter = QPainter(self)
+        metrics = painter.fontMetrics()
+        elided  = metrics.elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.width())
+        painter.drawText(self.rect(), self.alignment() or Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
 
 
 # ── LayerRow ───────────────────────────────────────────────────────────────
@@ -785,12 +881,15 @@ class LayerRow(QWidget):
         self._eye_btn.setChecked(True)
         self._eye_btn.setFixedSize(22, 22)
         self._eye_btn.setStyleSheet(f"""
-            QToolButton {{ border:none; background:transparent; color:{TEXT}; font-size:14px; }}
-            QToolButton:checked {{ color:{color}; }}
+            QToolButton {{ border:none; background:transparent; font-size:14px; }}
         """)
         self._eye_btn.setText("👁")
-        self._eye_btn.toggled.connect(
-            lambda checked: self.visibility_changed.emit(self._vol_idx, checked))
+
+        def _on_eye_toggled(checked: bool) -> None:
+            self._eye_btn.setText("👁" if checked else "🚫")
+            self.visibility_changed.emit(self._vol_idx, checked)
+
+        self._eye_btn.toggled.connect(_on_eye_toggled)
         hrow.addWidget(self._eye_btn)
 
         # WL target button — clicking makes this the active WL volume
@@ -800,7 +899,7 @@ class LayerRow(QWidget):
         self._wl_btn.clicked.connect(lambda: self.wl_select.emit(self._vol_idx))
         hrow.addWidget(self._wl_btn)
 
-        lbl = QLabel(rec.name)
+        lbl = ElidedLabel(rec.name)
         lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:bold;")
         lbl.setToolTip(rec.name)
         hrow.addWidget(lbl, 1)
@@ -934,7 +1033,8 @@ class LayerPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(230)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(240)
         self.setStyleSheet(f"background:{BG_PANEL};")
 
         outer = QVBoxLayout(self)
@@ -1050,24 +1150,29 @@ class NiftiViewer(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Three viewports
-        vp_container = QWidget()
-        vp_lay = QVBoxLayout(vp_container)
-        vp_lay.setContentsMargins(8, 8, 4, 8)
-        vp_lay.setSpacing(6)
+        # Outer splitter: viewports | layer panel
+        outer_spl = QSplitter(Qt.Orientation.Horizontal)
+        outer_spl.setStyleSheet("QSplitter::handle{background:#333340;width:2px;}")
+        outer_spl.setChildrenCollapsible(False)
 
+        # Inner splitter — three viewports side by side
+        # Added directly to outer_spl (no intermediate wrapper widget) so there
+        # is no dead space between the last viewport and the layer panel.
         spl = QSplitter(Qt.Orientation.Horizontal)
-        spl.setStyleSheet("QSplitter::handle{background:#333340;width:4px;}")
+        spl.setStyleSheet("""
+            QSplitter { margin: 6px 4px 6px 8px; }
+            QSplitter::handle { background:#333340; width:4px; }
+        """)
+        spl.setChildrenCollapsible(False)
         self._vps: list[SliceViewport] = []
         for i in range(3):
             vp = SliceViewport(i, self)
+            vp.setMinimumWidth(180)
             vp.slice_changed.connect(self._on_slice_changed)
             vp.set_wl_callbacks(self._on_wl_drag, self._on_wl_end)
             self._vps.append(vp)
             spl.addWidget(vp)
-        spl.setSizes([450, 450, 450])
-        vp_lay.addWidget(spl)
-        root.addWidget(vp_container, 1)
+        outer_spl.addWidget(spl)
 
         # Layer panel
         self._layer_panel = LayerPanel(self)
@@ -1077,13 +1182,19 @@ class NiftiViewer(QWidget):
         self._layer_panel.remove_requested.connect(self._on_remove_requested)
         self._layer_panel.wl_select_changed.connect(self._on_wl_select_changed)
         self._layer_panel.cutoff_changed.connect(self._on_cutoff_changed)
-        root.addWidget(self._layer_panel)
+        outer_spl.addWidget(self._layer_panel)
+
+        # Viewports expand, layer panel stays at its min/max width
+        outer_spl.setStretchFactor(0, 1)
+        outer_spl.setStretchFactor(1, 0)
+
+        root.addWidget(outer_spl)
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def load_base(self, path: str) -> tuple:
+    def load_base(self, ni_path: object, name='') -> tuple:
         """Load the first (base) volume.  Clears all existing volumes."""
-        rec, shape, zooms, code, affine = load_volume_record(path)
+        rec, shape, zooms, code, affine = load_volume_record(ni_path,inname=name)
         self._volumes.clear()
         self._volumes.append(rec)
         self._base_affine = affine
@@ -1102,11 +1213,11 @@ class NiftiViewer(QWidget):
         self._refresh()
         return shape, zooms, code
 
-    def add_overlay(self, path: str) -> tuple:
+    def add_overlay(self, ni_path: object, name='') -> tuple:
         """Add an overlay volume.  Requires at least one base volume loaded."""
         if not self._volumes:
             raise RuntimeError("Load a base volume first.")
-        rec, shape, zooms, code, _ = load_volume_record(path)
+        rec, shape, zooms, code, _ = load_volume_record(ni_path,inname=name)
         self._volumes.append(rec)
         vol_idx = len(self._volumes) - 1
         self._layer_panel.add_row(vol_idx, rec)
@@ -1134,6 +1245,38 @@ class NiftiViewer(QWidget):
         self._crosshair_visible = visible
         for vp in self._vps:
             vp.set_crosshair_visible(visible)
+
+    def reset_view(self) -> None:
+        """
+        Restore the default view for all volumes:
+          - Sliders back to mid-slice
+          - Camera pan and zoom reset to initial state
+          - Window/level reset to the original data range for each volume
+          - Layer panel WL readouts updated
+
+        Everything else (opacity, colourmap, cutoff, visibility) is left
+        unchanged — only the interactive adjustments are undone.
+        """
+        if not self._volumes:
+            return
+
+        # 1. Reset window/level on every volume to its initial values
+        for rec in self._volumes:
+            rec.wl_window = rec.hi - rec.lo or 1.
+            rec.wl_level  = (rec.hi + rec.lo) / 2.
+
+        # 2. Push reset WL to all viewports and update layer panel readouts
+        for vol_idx, rec in enumerate(self._volumes):
+            for vp in self._vps:
+                vp.set_wl(vol_idx, rec.wl_window, rec.wl_level)
+            self.wl_updated.emit(vol_idx, rec.wl_window, rec.wl_level)
+
+        # 3. Reset camera (pan + zoom) and slider on each viewport
+        for vp in self._vps:
+            vp.reset_camera()
+
+        # 4. Redraw crosshairs at the restored mid-slice position
+        self._update_crosshairs()
 
     def grab_screenshot(self, path: str) -> None:
         """
@@ -1286,9 +1429,13 @@ class NiftiViewer(QWidget):
             for rec in self._volumes[1:]:
                 vp.add_overlay(rec)
 
+        # Draw crosshairs at the initial mid-slice position
+        self._update_crosshairs()
+
     # ── Crosshair sync ────────────────────────────────────────────────────
 
-    def _on_slice_changed(self, _plane_idx: int, _slice_idx: int) -> None:
+    def _update_crosshairs(self) -> None:
+        """Compute the crosshair world point and draw it in all viewports."""
         if not self._geoms:
             return
         pts     = [vp.world_position() for vp in self._vps]
@@ -1302,6 +1449,9 @@ class NiftiViewer(QWidget):
         if self._crosshair_visible:
             for vp in self._vps:
                 vp.set_crosshair(world_pt, self._half_len)
+
+    def _on_slice_changed(self, _plane_idx: int, _slice_idx: int) -> None:
+        self._update_crosshairs()
 
 
 # ── Main window ────────────────────────────────────────────────────────────
@@ -1344,8 +1494,6 @@ class NiftiViewerWindow(QWidget):
         viewer_widget = NiftiViewerWindow(parent=some_parent)
         some_layout.addWidget(viewer_widget)
 
-    All toolbar controls and the status label are plain child widgets laid
-    out in a QVBoxLayout — no QMainWindow, QToolBar, or QStatusBar involved.
     """
 
     def __init__(self, parent=None):
@@ -1364,9 +1512,9 @@ class NiftiViewerWindow(QWidget):
         tb_lay.setContentsMargins(8, 4, 8, 4)
         tb_lay.setSpacing(6)
 
-        self._btn_open = QPushButton("  Open NIfTI…")
-        self._btn_open.clicked.connect(self._open_base)
-        tb_lay.addWidget(self._btn_open)
+        # self._btn_open = QPushButton("  Open NIfTI…")
+        # self._btn_open.clicked.connect(self._open_base)
+        # tb_lay.addWidget(self._btn_open)
 
         self._btn_overlay = QPushButton("  Add overlay…")
         self._btn_overlay.setEnabled(False)
@@ -1417,6 +1565,13 @@ class NiftiViewerWindow(QWidget):
         self._btn_screenshot.clicked.connect(self._take_screenshot)
         tb_lay.addWidget(self._btn_screenshot)
 
+        self._btn_reset = QPushButton("  ↺ Reset view")
+        self._btn_reset.setEnabled(False)
+        self._btn_reset.setToolTip(
+            "Restore default zoom, pan, slice positions and window/level for all volumes")
+        self._btn_reset.clicked.connect(self._reset_view)
+        tb_lay.addWidget(self._btn_reset)
+
         tb_lay.addStretch(1)
         root.addWidget(tb)
 
@@ -1425,20 +1580,8 @@ class NiftiViewerWindow(QWidget):
         self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
         root.addWidget(self.viewer, 1)
 
-        # ── Status bar ─────────────────────────────────────────────────
-        self._status = QLabel(
-            "Open a NIfTI file to begin.  "
-            "RMB-drag in any view to adjust windowing of the selected layer (W/L button).")
-        self._status.setFixedHeight(22)
-        self._status.setStyleSheet(
-            f"background:{BG_PANEL}; color:{TEXT_DIM}; font-size:11px; "
-            f"padding: 0 8px; border-top:1px solid #333340;")
-        root.addWidget(self._status)
 
     # ── Helpers ────────────────────────────────────────────────────────
-
-    def _show_status(self, msg: str) -> None:
-        self._status.setText(msg)
 
     def _on_mode(self, btn_id: int):
         mode = NiftiViewer.MODE_AFFINE if btn_id == 0 else NiftiViewer.MODE_MEDICAL
@@ -1452,15 +1595,10 @@ class NiftiViewerWindow(QWidget):
         if not path:
             return
         try:
-            shape, sp, code = self.viewer.load_base(path)
-            name = os.path.basename(path)
-            self._show_status(
-                f"[base] {name}  |  {shape[0]}×{shape[1]}×{shape[2]}"
-                f"  |  {sp[0]:.3f}×{sp[1]:.3f}×{sp[2]:.3f} mm  |  {code}")
+            self.viewer.load_base(path)
             self._btn_overlay.setEnabled(True)
             self._btn_screenshot.setEnabled(True)
         except Exception as exc:
-            self._show_status(f"Error: {exc}")
             raise
 
     def _add_overlay(self):
@@ -1470,15 +1608,12 @@ class NiftiViewerWindow(QWidget):
         if not path:
             return
         try:
-            shape, sp, code = self.viewer.add_overlay(path)
-            name = os.path.basename(path)
-            n = len(self.viewer._volumes) - 1
-            self._show_status(
-                f"[overlay {n}] {name}  |  {shape[0]}×{shape[1]}×{shape[2]}"
-                f"  |  {sp[0]:.3f}×{sp[1]:.3f}×{sp[2]:.3f} mm  |  {code}")
+            self.viewer.add_overlay(path)
         except Exception as exc:
-            self._show_status(f"Error: {exc}")
             raise
+
+    def _reset_view(self):
+        self.viewer.reset_view()
 
     def _take_screenshot(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1490,9 +1625,7 @@ class NiftiViewerWindow(QWidget):
             path += ".png"
         try:
             self.viewer.grab_screenshot(path)
-            self._show_status(f"Screenshot saved: {path}")
         except Exception as exc:
-            self._show_status(f"Screenshot error: {exc}")
             raise
 
 
@@ -1517,7 +1650,7 @@ def main():
             for path in args[1:]:
                 win.viewer.add_overlay(path)
         except Exception as exc:
-            win._show_status(f"Error loading from command line: {exc}")
+            raise
 
     sys.exit(app.exec())
 

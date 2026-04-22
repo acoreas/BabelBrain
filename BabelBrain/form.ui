@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1309</width>
+    <width>1380</width>
     <height>757</height>
    </rect>
   </property>
@@ -14,7 +14,7 @@
    <string>Widget</string>
   </property>
   <property name="layoutDirection">
-   <enum>Qt::LeftToRight</enum>
+   <enum>Qt::LayoutDirection::LeftToRight</enum>
   </property>
   <widget class="QLabel" name="label_2">
    <property name="geometry">
@@ -61,7 +61,7 @@
     <rect>
      <x>16</x>
      <y>63</y>
-     <width>1284</width>
+     <width>1355</width>
      <height>521</height>
     </rect>
    </property>
@@ -75,14 +75,14 @@
     <widget class="QComboBox" name="USMaskkHzDropDown">
      <property name="geometry">
       <rect>
-       <x>150</x>
+       <x>67</x>
        <y>30</y>
        <width>103</width>
        <height>32</height>
       </rect>
      </property>
      <property name="layoutDirection">
-      <enum>Qt::LeftToRight</enum>
+      <enum>Qt::LayoutDirection::LeftToRight</enum>
      </property>
      <item>
       <property name="text">
@@ -93,8 +93,8 @@
     <widget class="QLabel" name="label_11">
      <property name="geometry">
       <rect>
-       <x>27</x>
-       <y>35</y>
+       <x>8</x>
+       <y>8</y>
        <width>120</width>
        <height>20</height>
       </rect>
@@ -106,10 +106,10 @@
     <widget class="QLabel" name="label_16">
      <property name="geometry">
       <rect>
-       <x>27</x>
-       <y>70</y>
-       <width>120</width>
-       <height>20</height>
+       <x>10</x>
+       <y>63</y>
+       <width>57</width>
+       <height>16</height>
       </rect>
      </property>
      <property name="text">
@@ -119,14 +119,14 @@
     <widget class="QDoubleSpinBox" name="USPPWSpinBox">
      <property name="geometry">
       <rect>
-       <x>150</x>
-       <y>67</y>
+       <x>72</x>
+       <y>77</y>
        <width>90</width>
        <height>22</height>
       </rect>
      </property>
      <property name="alignment">
-      <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+      <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
      </property>
      <property name="decimals">
       <number>0</number>
@@ -147,9 +147,9 @@
     <widget class="QWidget" name="USMask" native="true">
      <property name="geometry">
       <rect>
-       <x>260</x>
+       <x>201</x>
        <y>40</y>
-       <width>1013</width>
+       <width>1136</width>
        <height>400</height>
       </rect>
      </property>
@@ -157,7 +157,7 @@
     <widget class="QPushButton" name="CalculatePlanningMask">
      <property name="geometry">
       <rect>
-       <x>75</x>
+       <x>26</x>
        <y>371</y>
        <width>131</width>
        <height>81</height>
@@ -177,9 +177,9 @@ mask</string>
     <widget class="QTabWidget" name="CTZTETabs">
      <property name="geometry">
       <rect>
-       <x>28</x>
-       <y>159</y>
-       <width>219</width>
+       <x>6</x>
+       <y>160</y>
+       <width>183</width>
        <height>145</height>
       </rect>
      </property>
@@ -198,7 +198,7 @@ mask</string>
         <rect>
          <x>12</x>
          <y>59</y>
-         <width>193</width>
+         <width>164</width>
          <height>40</height>
         </rect>
        </property>
@@ -207,9 +207,9 @@ mask</string>
       <widget class="QLabel" name="RangeLabel">
        <property name="geometry">
         <rect>
-         <x>36</x>
-         <y>24</y>
-         <width>165</width>
+         <x>26</x>
+         <y>25</y>
+         <width>137</width>
          <height>16</height>
         </rect>
        </property>
@@ -225,14 +225,14 @@ mask</string>
       <widget class="QDoubleSpinBox" name="HUThresholdSpinBox">
        <property name="geometry">
         <rect>
-         <x>60</x>
+         <x>38</x>
          <y>46</y>
          <width>97</width>
          <height>22</height>
         </rect>
        </property>
        <property name="alignment">
-        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
        </property>
        <property name="decimals">
         <number>0</number>
@@ -251,8 +251,8 @@ mask</string>
        <property name="geometry">
         <rect>
          <x>37</x>
-         <y>23</y>
-         <width>139</width>
+         <y>19</y>
+         <width>105</width>
          <height>20</height>
         </rect>
        </property>
@@ -260,7 +260,7 @@ mask</string>
         <string>HU threshold</string>
        </property>
        <property name="alignment">
-        <set>Qt::AlignCenter</set>
+        <set>Qt::AlignmentFlag::AlignCenter</set>
        </property>
       </widget>
      </widget>
@@ -284,7 +284,7 @@ mask</string>
       <number>50</number>
      </property>
      <property name="orientation">
-      <enum>Qt::Horizontal</enum>
+      <enum>Qt::Orientation::Horizontal</enum>
      </property>
     </widget>
     <widget class="QLabel" name="label_6">
@@ -323,7 +323,7 @@ mask</string>
     <rect>
      <x>7</x>
      <y>607</y>
-     <width>1282</width>
+     <width>1365</width>
      <height>143</height>
     </rect>
    </property>
@@ -432,7 +432,7 @@ mask</string>
   <widget class="QPushButton" name="AdvancedOptions">
    <property name="geometry">
     <rect>
-     <x>1179</x>
+     <x>1202</x>
      <y>16</y>
      <width>123</width>
      <height>33</height>

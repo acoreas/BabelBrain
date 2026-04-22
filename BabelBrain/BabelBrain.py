@@ -66,7 +66,7 @@ from SelFiles.SelFiles import SelFiles,ValidThermalProfile
 
 from Options.Options import AdvancedOptions, OptionalParams
 from ClockDialog import ClockDialog
-from GUIComponents.NiftiSliceViewer import NiftiSliceViewer
+from GUIComponents.nifti_viewer import NiftiViewerWindow
 
 
 multiprocessing.freeze_support()
@@ -474,7 +474,7 @@ class BabelBrain(QWidget):
             self.AcSim.EnableMultiPoint(profile['MultiPoint'])
             self.ThermalSim.EnableMultiPoint()
         self.InitApplication()
-        self._slice_viewer = None   # NiftiSliceViewer, created in UpdateMask
+        self._slice_viewer = None   # NiftiViewerWindow, created in UpdateMask
 
         # Set default figure text color, works for both light and dark mode
         FIGTEXTCOLOR = np.array(self.palette().color(QPalette.WindowText).getRgb())/255.0
@@ -943,7 +943,7 @@ class BabelBrain(QWidget):
 
     def UpdateMask(self, bDeleteOnly=False):
         '''
-        Refresh mask — replaces Matplotlib panels with NiftiSliceViewer (VTK).
+        Refresh mask — replaces Matplotlib panels with NiftiViewerWindow (VTK).
         '''
         self.hideClockDialog()
         if not self.Widget.HideMarkscheckBox.isEnabled():
@@ -988,19 +988,18 @@ class BabelBrain(QWidget):
             return
 
         # --- create / re-create the VTK viewer ---
-        self._slice_viewer = NiftiSliceViewer(self.Widget.USMask)
+        self._slice_viewer = NiftiViewerWindow(self.Widget.USMask)
         self._layout.addWidget(self._slice_viewer)
 
-        alpha = self.Widget.TransparencyScrollBar.value() / 100.0
-        self._slice_viewer.set_volumes(
-            t1w_nib    = t1w_nib,
-            mask_nib   = mask_nib,
-            focal_voxel= focal_voxel,
-            alpha      = alpha,
-        )
+        self._slice_viewer.viewer.load_base(mask_nib,'Tissue Type')
+        self._slice_viewer._btn_overlay.setEnabled(True)
+        self._slice_viewer._btn_screenshot.setEnabled(True)
+        self._slice_viewer._btn_reset.setEnabled(True)
+        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
+        self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
 
         self.UpdateAcousticTab()
-        self.Widget.TransparencyScrollBar.setEnabled(True)
+        # self.Widget.TransparencyScrollBar.setEnabled(True)
 
     @Slot()
     def HideMarks(self, v):
