@@ -69,7 +69,7 @@ def collect_missing_package_info(missing_packages):
         missing_binaries += modinfo[1]
         missing_hiddenimports += modinfo[2]
 
-    print("\nAdding Missing Data Files:\n" + "\n".join(map(str, missing_datas)))
+    # print("\nAdding Missing Data Files:\n" + "\n".join(map(str, missing_datas)))
     print("\nAdding Missing Binaries:\n" + "\n".join(map(str, missing_binaries)))
     print("\nAdding Missing Hidden Imports:\n"+ "\n".join(map(str, missing_hiddenimports)))
     return missing_datas, missing_binaries, missing_hiddenimports
@@ -261,8 +261,8 @@ elif "Windows" in platform.system():  # For windows systems
 
     # CUDA headers
     cuda_headers = []
-    cuda_headers += [(os.path.join(cuda_include, "cuda_runtime.h"), "./Library/include")]
-    cuda_headers += [(os.path.join(cuda_include, "cuda_fp16.h"), "./Library/include")]
+    # cuda_headers += [(os.path.join(cuda_include, "cuda_runtime.h"), "./Library/include")]
+    # cuda_headers += [(os.path.join(cuda_include, "cuda_fp16.h"), "./Library/include")]
 
     # Add to datas
     datas += cuda_headers
@@ -273,7 +273,7 @@ elif "Windows" in platform.system():  # For windows systems
     # ==========================================================================
 
     # binaries += [(f, ".") for f in glob(os.path.join(cuda_bin, "*.dll"))] # CUDA dlls
-    binaries += [(conda_prefix + "/Library/bin/nvrtc-builtins64_132.dll", "./")]
+    binaries += [(conda_prefix + "/Library/bin/nvrtc-builtins64_*.dll", ".")]
     print("\nBinaries:\n" + "\n".join(map(str, binaries)))  # print list of binaries
 
     binaries += collect_external_bin_binaries()
@@ -285,13 +285,8 @@ elif "Windows" in platform.system():  # For windows systems
     missing_package_info = [
         "BabelViscoFDTD",
         "cupy",
-        "cupyx",
         "cupy_backends",
         "fastrlock",
-        "skimage",
-        "pyopencl",
-        "pwlf",
-        "openpyxl",
     ]
     md, mb, mhi = collect_missing_package_info(missing_package_info)
 
