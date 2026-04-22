@@ -76,13 +76,13 @@ class BabelBaseTx(QWidget):
         FocIJK=np.ones((4,1))
         FocIJK[:3,0]=np.array(np.where(self._MainApp._FinalMask==5)).flatten()
 
-        FocXYZ=self._MainApp._MaskData.affine@FocIJK
+        FocXYZ=self._MainApp._MaskNib.affine@FocIJK
         FocIJKAdjust=FocIJK.copy()
         #we adjust in steps
-        FocIJKAdjust[0,0]+=self.Widget.XMechanicSpinBox.value()/self._MainApp._MaskData.header.get_zooms()[0]
-        FocIJKAdjust[1,0]+=self.Widget.YMechanicSpinBox.value()/self._MainApp._MaskData.header.get_zooms()[1]
+        FocIJKAdjust[0,0]+=self.Widget.XMechanicSpinBox.value()/self._MainApp._MaskNib.header.get_zooms()[0]
+        FocIJKAdjust[1,0]+=self.Widget.YMechanicSpinBox.value()/self._MainApp._MaskNib.header.get_zooms()[1]
 
-        FocXYZAdjust=self._MainApp._MaskData.affine@FocIJKAdjust
+        FocXYZAdjust=self._MainApp._MaskNib.affine@FocIJKAdjust
         AdjustmentInRAS=(FocXYZ-FocXYZAdjust).flatten()[:3]
 
         print('AdjustmentInRAS recalc',AdjustmentInRAS)
