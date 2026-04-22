@@ -85,6 +85,7 @@ AFFINE_NAMES  = ["Slice k  (axial-like)", "Slice i  (sagittal-like)", "Slice j  
 MEDICAL_NAMES = ["Axial", "Coronal", "Sagittal"]
 
 CMAPS = {
+    "TissueLabel": "tissue_label",
     "Grey":  None,          # black→white
     "Hot":   "hot",
     "Cool":  "cool",
@@ -93,6 +94,23 @@ CMAPS = {
     "Jet":   "jet",         # blue→cyan→green→yellow→red
 }
 
+# ---------------------------------------------------------------------------
+# Tissue colour table  (matches existing BabelBrain colour definitions)
+# mask integer value → (R, G, B, A) in 0-255
+# ---------------------------------------------------------------------------
+_TISSUE_RGBA: dict[int, tuple[int, int, int, int]] = {
+    0: (  0,   0,   0,   0),   # background  – fully transparent
+    1: (  0,  77, 255, 160),   # scalp
+    2: (  0, 128, 255, 160),   # cortical bone
+    3: ( 21, 255, 225, 160),   # trabecular bone
+    4: (124, 255, 121, 160),   # brain (non-segmented)
+    5: (255, 255,   0, 220),   # focal-point voxel  (bright yellow)
+    6: (255, 148,   0, 160),   # white matter
+    7: (255,  29,   0, 160),   # grey matter
+    8: (127,   0,   0, 160),   # CSF
+}
+
+_N_LABELS = max(_TISSUE_RGBA) + 1
 
 def _hex_rgb(h):
     h = h.lstrip("#")
@@ -107,6 +125,16 @@ def _np4(m: np.ndarray) -> vtk.vtkMatrix4x4:
     return mat
 
 
+def _build_tissue_lut() -> vtk.vtkLookupTable:
+    lut = vtk.vtkLookupTable()
+    lut.SetNumberOfTableValues(_N_LABELS)
+    lut.SetTableRange(0, _N_LABELS - 1)
+    for v in range(_N_LABELS):
+        r, g, b, a = _TISSUE_RGBA.get(v, (0, 0, 0, 0))
+        lut.SetTableValue(v, r / 255.0, g / 255.0, b / 255.0, a / 255.0)
+    lut.Build()
+    return lut
+
 def _make_lut(
     name: str | None,
     lo: float,
@@ -119,6 +147,10 @@ def _make_lut(
     (fully transparent), effectively masking them out.  Values >= cutoff use
     the normal colour map with alpha=1.
     """
+
+    if name == 'tissue_label':
+        return _build_tissue_lut()
+
     N = 1024   # enough entries for smooth gradients and a sharp cutoff edge
     lut = vtk.vtkLookupTable()
     lut.SetRange(lo, hi)
@@ -187,6 +219,7 @@ def _make_lut(
                 lut.SetTableValue(i, r, g, b, 0.0)
 
     return lut
+
 
 
 # ── PlaneGeometry ──────────────────────────────────────────────────────────
@@ -833,10 +866,11 @@ class LayerRow(QWidget):
     wl_select          = Signal(int)
     cutoff_changed     = Signal(int, object)   # (vol_idx, float | None)
 
-    def __init__(self, vol_idx: int, rec: VolumeRecord, parent=None):
+    def __init__(self, vol_idx: int, rec: VolumeRecord,parent=None,tissue_label=False):
         super().__init__(parent)
         self._vol_idx = vol_idx
         self._is_base = (vol_idx == 0)
+        self._tissue_label=tissue_label
         self._build_ui(rec)
 
     def set_wl_active(self, active: bool) -> None:
@@ -898,6 +932,8 @@ class LayerRow(QWidget):
         self._wl_btn.setFixedSize(30, 22)
         self._wl_btn.clicked.connect(lambda: self.wl_select.emit(self._vol_idx))
         hrow.addWidget(self._wl_btn)
+        if self._tissue_label:
+            self._wl_btn.setVisible(False)
 
         lbl = ElidedLabel(rec.name)
         lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:bold;")
@@ -908,6 +944,9 @@ class LayerRow(QWidget):
         co_lbl = QLabel("≥")
         co_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
         hrow.addWidget(co_lbl)
+        if self._tissue_label:
+            co_lbl.setVisible(False)
+
 
         self._cutoff_edit = QLineEdit()
         self._cutoff_edit.setPlaceholderText("cutoff")
@@ -937,6 +976,8 @@ class LayerRow(QWidget):
 
         self._cutoff_edit.editingFinished.connect(_on_cutoff_changed)
         hrow.addWidget(self._cutoff_edit)
+        if self._tissue_label:
+            self._cutoff_edit.setVisible(False)
 
         if not self._is_base:
             rm_btn = QToolButton()
@@ -961,6 +1002,9 @@ class LayerRow(QWidget):
 
         # Style the WL button initially (inactive)
         self.set_wl_active(False)
+
+        if self._tissue_label:
+            self._wl_lbl.setVisible(False)
 
         # ── Opacity row (overlays only) ────────────────────────────────
         if not self._is_base:
@@ -998,8 +1042,11 @@ class LayerRow(QWidget):
         clbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
         crow.addWidget(clbl)
 
+        if self._tissue_label:
+            clbl.setVisible(False)
+
         self._cmap_combo = QComboBox()
-        self._cmap_combo.addItems(list(CMAPS.keys()))
+        self._cmap_combo.addItems(list(CMAPS.keys())[1:])
         self._cmap_combo.setCurrentText("Grey")
         self._cmap_combo.setFixedHeight(22)
         self._cmap_combo.setStyleSheet(f"""
@@ -1015,6 +1062,8 @@ class LayerRow(QWidget):
         self._cmap_combo.currentTextChanged.connect(
             lambda t: self.cmap_changed.emit(self._vol_idx, t))
         crow.addWidget(self._cmap_combo, 1)
+        if self._tissue_label:
+            self._cmap_combo.setVisible(False)
         lay.addLayout(crow)
 
 
@@ -1066,8 +1115,8 @@ class LayerPanel(QWidget):
         self._rows: list[LayerRow] = []
         self._active_wl: int = 0   # which row has WL active
 
-    def add_row(self, vol_idx: int, rec: VolumeRecord) -> None:
-        row = LayerRow(vol_idx, rec, self._container)
+    def add_row(self, vol_idx: int, rec: VolumeRecord,tissue_label=False) -> None:
+        row = LayerRow(vol_idx, rec, self._container,tissue_label)
         row.opacity_changed.connect(self.opacity_changed)
         row.cmap_changed.connect(self.cmap_changed)
         row.visibility_changed.connect(self.visibility_changed)
@@ -1192,7 +1241,7 @@ class NiftiViewer(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def load_base(self, ni_path: object, name='') -> tuple:
+    def load_base(self, ni_path: object, name='',tissue_label=False) -> tuple:
         """Load the first (base) volume.  Clears all existing volumes."""
         rec, shape, zooms, code, affine = load_volume_record(ni_path,inname=name)
         self._volumes.clear()
@@ -1207,7 +1256,7 @@ class NiftiViewer(QWidget):
             self._layer_panel._vlay.removeWidget(row)
             row.deleteLater()
         self._layer_panel._rows.clear()
-        self._layer_panel.add_row(0, rec)
+        self._layer_panel.add_row(0, rec,tissue_label=tissue_label)
 
         self._selected_vol = 0
         self._refresh()

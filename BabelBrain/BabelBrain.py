@@ -991,11 +991,12 @@ class BabelBrain(QWidget):
         self._slice_viewer = NiftiViewerWindow(self.Widget.USMask)
         self._layout.addWidget(self._slice_viewer)
 
-        self._slice_viewer.viewer.load_base(mask_nib,'Tissue Type')
+        self._slice_viewer.viewer.load_base(mask_nib,'Tissue Type',tissue_label=True)
         self._slice_viewer._btn_overlay.setEnabled(True)
         self._slice_viewer._btn_screenshot.setEnabled(True)
         self._slice_viewer._btn_reset.setEnabled(True)
         self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
+        self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
         self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
 
         self.UpdateAcousticTab()
