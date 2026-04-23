@@ -94,7 +94,7 @@ dependencies:
     - python-utils==3.4.5
     - pytools==2022.1.13
     - pytz==2022.6
-    - pyvista==0.37.0
+    - pyvista==0.46.5
     - pywavelets==1.4.1
     - pyyaml==6.0
     - pwlf==2.5.1
@@ -116,7 +116,7 @@ dependencies:
     - typing-extensions==4.4.0
     - uhi==0.3.2
     - urllib3==1.26.13
-    - vtk==9.2.2
+    - vtk==9.5.2
     - webcolors==1.12
     - wslink==1.9.1
     - xmltodict==1.0.2

@@ -239,5 +239,5 @@ dependencies:
       - typing-extensions==4.15.0
       - uhi==1.0.0
       - urllib3==2.6.3
-      - vtk==9.2.6
+      - vtk==9.5.2
 prefix: /home/spichardo/miniconda3/envs/Babel2
