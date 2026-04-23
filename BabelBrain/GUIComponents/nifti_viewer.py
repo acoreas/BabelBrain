@@ -81,7 +81,7 @@ TEXT_DIM  = "#71717a"
 VOL_COLORS = ["#ffffff", "#ff9f43", "#48dbfb", "#ff6b81",
               "#a29bfe", "#00d2d3", "#ffd32a", "#0abde3"]
 
-AFFINE_NAMES  = ["Slice k  (axial-like)", "Slice i  (sagittal-like)", "Slice j  (coronal-like)"]
+AFFINE_NAMES  = ["Slice j ", "Slice i", "Slice k"]
 MEDICAL_NAMES = ["Axial", "Coronal", "Sagittal"]
 
 CMAPS = {
@@ -100,14 +100,14 @@ CMAPS = {
 # ---------------------------------------------------------------------------
 _TISSUE_RGBA: dict[int, tuple[int, int, int, int]] = {
     0: (  0,   0,   0,   0),   # background  – fully transparent
-    1: (  0,  77, 255, 160),   # scalp
-    2: (  0, 128, 255, 160),   # cortical bone
-    3: ( 21, 255, 225, 160),   # trabecular bone
-    4: (124, 255, 121, 160),   # brain (non-segmented)
+    1: (  0,  77, 255, 255),   # scalp
+    2: (  0, 128, 255, 255),   # cortical bone
+    3: ( 21, 255, 225, 255),   # trabecular bone
+    4: (124, 255, 121, 255),   # brain (non-segmented)
     5: (255, 255,   0, 220),   # focal-point voxel  (bright yellow)
-    6: (255, 148,   0, 160),   # white matter
-    7: (255,  29,   0, 160),   # grey matter
-    8: (127,   0,   0, 160),   # CSF
+    6: (255, 148,   0, 255),   # white matter
+    7: (255,  29,   0, 255),   # grey matter
+    8: (127,   0,   0, 255),   # CSF
 }
 
 _N_LABELS = max(_TISSUE_RGBA) + 1
@@ -233,6 +233,7 @@ class PlaneGeometry:
     n:       int
     ps:      float
     flip_lr: bool = False   # True → place camera on opposite side (radiological flip)
+    flip_up: bool = False
 
 
 # ── VolumeRecord ───────────────────────────────────────────────────────────
@@ -338,9 +339,9 @@ def affine_plane_geoms(affine: np.ndarray, shape: tuple) -> list[PlaneGeometry]:
     ctr = (affine @ mid)[:3]
     def ps(a, b): return max(a, b) / 2.
     return [
-        PlaneGeometry(normal=dk, right=di, up=dj,  centre=ctr.copy(), step=sk, n=nk, ps=ps(ni*si, nj*sj)),
+        PlaneGeometry(normal=dj, right=di, up=dk,  centre=ctr.copy(), step=sj, n=nj, ps=ps(ni*si, nk*sk),flip_lr=True),
         PlaneGeometry(normal=di, right=dj, up=dk,  centre=ctr.copy(), step=si, n=ni, ps=ps(nj*sj, nk*sk)),
-        PlaneGeometry(normal=dj, right=di, up=dk,  centre=ctr.copy(), step=sj, n=nj, ps=ps(ni*si, nk*sk)),
+        PlaneGeometry(normal=dk, right=di, up=-dj,  centre=ctr.copy(), step=sk, n=nk, ps=ps(ni*si, nj*sj),flip_lr=True)
     ]
 
 
@@ -370,7 +371,7 @@ def medical_plane_geoms(ras_min, ras_max, iso, radiological) -> list[PlaneGeomet
     return [
         PlaneGeometry(normal=ax_z,  right=ax_x, up=ax_y, centre=ctr.copy(), step=iso, n=ns(2), ps=ps(ex,ey), flip_lr=flip),
         PlaneGeometry(normal=ax_y,  right=ax_x, up=ax_z, centre=ctr.copy(), step=iso, n=ns(1), ps=ps(ex,ez), flip_lr=flip),
-        PlaneGeometry(normal=ax_x,  right=sa_r, up=ax_z, centre=ctr.copy(), step=iso, n=ns(0), ps=ps(ey,ez), flip_lr=flip),
+        PlaneGeometry(normal=ax_x,  right=sa_r, up=ax_z, centre=ctr.copy(), step=iso, n=ns(0), ps=ps(ey,ez), flip_lr=False),
     ]
 
 
@@ -407,13 +408,12 @@ def _make_wl_style(on_wl_drag, on_wl_end, on_scroll) -> vtk.vtkInteractorStyle:
 
     Interactions
     ------------
-    Left button drag        : pan
-    Right button drag       : window/level — on_wl_drag(dw, dl)
-                              dw = horizontal (window width)
-                              dl = vertical   (window centre/level)
-    Mouse wheel             : scroll slices — on_scroll(+1 or -1)
-    Ctrl + mouse wheel      : zoom (parallel scale ±10 %)
-    Middle button drag      : zoom
+    Right button drag         : window/level — on_wl_drag(dw_norm, dl_norm)
+    Shift + Right button drag : zoom  (vertical drag — up = zoom in)
+    Left button drag          : pan
+    Middle button drag        : zoom
+    Mouse wheel               : scroll slices — on_scroll(±1)
+    Ctrl + mouse wheel        : zoom ±10 %
     """
     style = vtk.vtkInteractorStyleUser()
 
@@ -472,9 +472,13 @@ def _make_wl_style(on_wl_drag, on_wl_end, on_scroll) -> vtk.vtkInteractorStyle:
         dx = x - _s["lx"]; dy = y - _s["ly"]
         _s["lx"], _s["ly"] = x, y
         if _s["rmb"]:
-            # Pass normalised fractions of viewport — NiftiViewer scales by range
-            w, h = obj.GetInteractor().GetRenderWindow().GetSize()
-            on_wl_drag(dx / (w or 1), dy / (h or 1))
+            if obj.GetInteractor().GetShiftKey():
+                # Shift + RMB drag → zoom  (vertical drag: up = zoom in)
+                _zoom(obj, 1.0 - dy * 0.01)
+            else:
+                # Plain RMB drag → window / level
+                w, h = obj.GetInteractor().GetRenderWindow().GetSize()
+                on_wl_drag(dx / (w or 1), dy / (h or 1))
         elif _s["lmb"]:
             _pan(obj, dx, dy)
         elif _s["mmb"]:
@@ -1241,7 +1245,7 @@ class NiftiViewer(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def load_base(self, ni_path: object, name='',tissue_label=False) -> tuple:
+    def load_base(self, ni_path: object, target:np.ndarray, name='',tissue_label=False) -> tuple:
         """Load the first (base) volume.  Clears all existing volumes."""
         rec, shape, zooms, code, affine = load_volume_record(ni_path,inname=name)
         self._volumes.clear()
@@ -1259,6 +1263,7 @@ class NiftiViewer(QWidget):
         self._layer_panel.add_row(0, rec,tissue_label=tissue_label)
 
         self._selected_vol = 0
+        self._target=target
         self._refresh()
         return shape, zooms, code
 
@@ -1325,7 +1330,84 @@ class NiftiViewer(QWidget):
             vp.reset_camera()
 
         # 4. Redraw crosshairs at the restored mid-slice position
-        self._update_crosshairs()
+        if self._mode == self.MODE_AFFINE:
+            self._vps[0]._slider.setValue(self._target[1])
+            self._vps[1]._slider.setValue(self._target[0])
+            self._vps[2]._slider.setValue(self._target[2])
+        else:
+            target_med=self.affine_to_medical_coords(tuple(self._target))
+            self._vps[0]._slider.setValue(int(target_med[0]))
+            self._vps[1]._slider.setValue(int(target_med[1]))
+            self._vps[2]._slider.setValue(int(target_med[2]))
+
+    def affine_to_medical_coords(
+        self,
+        ijk: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """
+        Convert a voxel coordinate in the base volume's native (affine) index
+        space to the equivalent slider indices in medical (RAS) display mode.
+
+        Parameters
+        ----------
+        ijk : (i, j, k)
+            Voxel indices in the base volume's index space (can be fractional).
+
+        Returns
+        -------
+        (i_axial, i_coronal, i_sagittal) : float tuple
+            Corresponding slider indices for the three medical-mode viewports:
+              i_axial    — Axial viewport    (scroll along RAS-Z)
+              i_coronal  — Coronal viewport  (scroll along RAS-Y)
+              i_sagittal — Sagittal viewport (scroll along RAS-X)
+
+            Values are continuous (fractional) so you can round to int for
+            the nearest slice.  They are clipped to [0, n-1] of each plane.
+
+        Raises
+        ------
+        RuntimeError
+            If no base volume has been loaded yet.
+
+        Notes
+        -----
+        The medical grid is defined as:
+          origin  = ras_min  (minimum-coordinate corner of the RAS bounding box)
+          spacing = iso      (minimum voxel size of the base affine)
+          axes    = world X, Y, Z
+
+        So for any world point W:
+          i_axial    = (W[2] - ras_min[2]) / iso
+          i_coronal  = (W[1] - ras_min[1]) / iso
+          i_sagittal = (W[0] - ras_min[0]) / iso
+        """
+        if self._base_affine is None or self._ras_min is None:
+            raise RuntimeError("No base volume loaded.")
+
+        # Step 1 — affine voxel index → RAS world position
+        i, j, k = ijk
+        world = (self._base_affine @ np.array([i, j, k, 1.0]))[:3]
+
+        # Step 2 — RAS world → medical grid indices
+        sp, _ = _decompose(self._base_affine)
+        iso   = float(np.min(sp))
+
+        geoms = medical_plane_geoms(
+            self._ras_min, self._ras_max, iso, radiological=False)
+
+        def _clamp(val, pg):
+            return float(np.clip(val, 0, pg.n - 1))
+
+        # Each PlaneGeometry's scroll axis = its normal.  The scroll index is
+        # the projection of (world - ras_min) onto the normal, divided by iso.
+        # For axial    (normal=[0,0,1]): index = (world[2] - ras_min[2]) / iso
+        # For coronal  (normal=[0,1,0]): index = (world[1] - ras_min[1]) / iso
+        # For sagittal (normal=[1,0,0]): index = (world[0] - ras_min[0]) / iso
+        i_ax  = _clamp(np.dot(world - self._ras_min, geoms[0].normal) / iso, geoms[0])
+        i_co  = _clamp(np.dot(world - self._ras_min, geoms[1].normal) / iso, geoms[1])
+        i_sa  = _clamp(np.dot(world - self._ras_min, geoms[2].normal) / iso, geoms[2])
+
+        return (i_ax, i_co, i_sa)
 
     def grab_screenshot(self, path: str) -> None:
         """
@@ -1478,8 +1560,15 @@ class NiftiViewer(QWidget):
             for rec in self._volumes[1:]:
                 vp.add_overlay(rec)
 
-        # Draw crosshairs at the initial mid-slice position
-        self._update_crosshairs()
+        if self._mode == self.MODE_AFFINE:
+            self._vps[0]._slider.setValue(self._target[1])
+            self._vps[1]._slider.setValue(self._target[0])
+            self._vps[2]._slider.setValue(self._target[2])
+        else:
+            target_med=self.affine_to_medical_coords(tuple(self._target))
+            self._vps[0]._slider.setValue(int(target_med[0]))
+            self._vps[1]._slider.setValue(int(target_med[1]))
+            self._vps[2]._slider.setValue(int(target_med[2]))
 
     # ── Crosshair sync ────────────────────────────────────────────────────
 

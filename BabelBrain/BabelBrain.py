@@ -1110,6 +1110,7 @@ class BabelBrain(QWidget):
         leg.get_frame().set_facecolor(self._BackgroundColorFigures)
         self.Widget.HideMarkscheckBox.setVisible(True)
         self.Widget.TransparencyScrollBar.setVisible(True)
+        self.Widget.transparencyLabel.setVisible(True)
         self.Widget.TransparencyScrollBar.setEnabled(True)
         if not self.Widget.HideMarkscheckBox.isEnabled():
             self.Widget.HideMarkscheckBox.setEnabled(True)
@@ -1121,6 +1122,7 @@ class BabelBrain(QWidget):
 
         self.Widget.HideMarkscheckBox.setVisible(False)
         self.Widget.TransparencyScrollBar.setVisible(False)
+        self.Widget.transparencyLabel.setVisible(False)
         
         mask_nib=self._MaskNib 
         
@@ -1156,7 +1158,10 @@ class BabelBrain(QWidget):
         self._slice_viewer = NiftiViewerWindow()
         self._layout.addWidget(self._slice_viewer)
 
-        self._slice_viewer.viewer.load_base(mask_nib,'Tissue Type',tissue_label=True)
+        self._slice_viewer.viewer.load_base(mask_nib,
+                                            focal_voxel,
+                                            'Tissue Type',
+                                            tissue_label=True)
         self._slice_viewer._btn_overlay.setEnabled(True)
         self._slice_viewer._btn_screenshot.setEnabled(True)
         self._slice_viewer._btn_reset.setEnabled(True)

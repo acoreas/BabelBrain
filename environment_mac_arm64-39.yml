@@ -119,7 +119,7 @@ dependencies:
       - python-utils==3.4.5
       - pytools==2022.1.13
       - pytz==2022.6
-      - pyvista==0.40.0
+      - pyvista==0.46.5
       - pywavelets==1.4.1
       - pyyaml==6.0
       - pyyaml-env-tag==0.1
@@ -144,7 +144,7 @@ dependencies:
       - uhi==0.3.2
       - urllib3==1.26.12
       - validators==0.20.0
-      - vtk==9.1.0
+      - vtk==9.5.2
       - watchdog==2.1.9
       - webcolors==1.12
       - wslink==1.9.1
