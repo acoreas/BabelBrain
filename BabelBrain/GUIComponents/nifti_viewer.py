@@ -295,7 +295,7 @@ def numpy_to_vtk_index(data: np.ndarray, spacing: np.ndarray) -> vtk.vtkImageDat
     return img
 
 
-def load_volume_record(ni_path: object, inname='') -> tuple[VolumeRecord, tuple, tuple, str]:
+def load_volume_record(ni_path: object, inname='',use_percentile=False) -> tuple[VolumeRecord, tuple, tuple, str]:
     """Load a NIfTI file and return a VolumeRecord + metadata."""
     if nib is None:
         raise ImportError("nibabel is required: pip install nibabel")
@@ -314,7 +314,12 @@ def load_volume_record(ni_path: object, inname='') -> tuple[VolumeRecord, tuple,
 
     affine = img.affine.astype(np.float64)
     sp, _  = _decompose(affine)
-    lo, hi = float(data.min()), float(data.max())
+    if use_percentile:
+        perc=np.percentile(data.flatten(),[1,99])
+        lo=perc[0]
+        hi=perc[1]
+    else: 
+        lo, hi = float(data.min()), float(data.max())
 
     rec = VolumeRecord(
         name      = name,
@@ -1001,34 +1006,34 @@ class LayerRow(QWidget):
             self._wl_lbl.setVisible(False)
 
         # ── Opacity row (overlays only) ────────────────────────────────
-        if not self._is_base:
-            orow = QHBoxLayout(); orow.setSpacing(6)
-            olk = QLabel("Opacity")
-            olk.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
-            orow.addWidget(olk)
+        # if not self._is_base:
+        orow = QHBoxLayout(); orow.setSpacing(6)
+        olk = QLabel("Opacity")
+        olk.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        orow.addWidget(olk)
 
-            self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
-            self._opacity_slider.setRange(0, 100)
-            self._opacity_slider.setValue(100)
-            self._opacity_slider.setFixedHeight(16)
-            self._opacity_slider.setStyleSheet(f"""
-                QSlider::groove:horizontal {{ height:3px; background:#333340; }}
-                QSlider::handle:horizontal {{
-                    background:{color}; width:12px; height:12px;
-                    margin:-5px 0; border-radius:6px; }}
-                QSlider::sub-page:horizontal {{ background:{color}; }}
-            """)
-            self._opacity_slider.valueChanged.connect(
-                lambda v: self.opacity_changed.emit(self._vol_idx, v / 100.0))
-            orow.addWidget(self._opacity_slider, 1)
+        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(0, 100)
+        self._opacity_slider.setValue(100)
+        self._opacity_slider.setFixedHeight(16)
+        self._opacity_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ height:3px; background:#333340; }}
+            QSlider::handle:horizontal {{
+                background:{color}; width:12px; height:12px;
+                margin:-5px 0; border-radius:6px; }}
+            QSlider::sub-page:horizontal {{ background:{color}; }}
+        """)
+        self._opacity_slider.valueChanged.connect(
+            lambda v: self.opacity_changed.emit(self._vol_idx, v / 100.0))
+        orow.addWidget(self._opacity_slider, 1)
 
-            self._pct_lbl = QLabel("100%")
-            self._pct_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
-            self._pct_lbl.setFixedWidth(32)
-            self._opacity_slider.valueChanged.connect(
-                lambda v: self._pct_lbl.setText(f"{v}%"))
-            orow.addWidget(self._pct_lbl)
-            lay.addLayout(orow)
+        self._pct_lbl = QLabel("100%")
+        self._pct_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        self._pct_lbl.setFixedWidth(32)
+        self._opacity_slider.valueChanged.connect(
+            lambda v: self._pct_lbl.setText(f"{v}%"))
+        orow.addWidget(self._pct_lbl)
+        lay.addLayout(orow)
 
         # ── Colourmap row ──────────────────────────────────────────────
         crow = QHBoxLayout(); crow.setSpacing(6)
@@ -1266,11 +1271,11 @@ class NiftiViewer(QWidget):
         self._refresh()
         return shape, zooms, code
 
-    def add_overlay(self, ni_path: object, name='') -> tuple:
+    def add_overlay(self, ni_path: object, name='',use_percentile=False) -> tuple:
         """Add an overlay volume.  Requires at least one base volume loaded."""
         if not self._volumes:
             raise RuntimeError("Load a base volume first.")
-        rec, shape, zooms, code, _ = load_volume_record(ni_path,inname=name)
+        rec, shape, zooms, code, _ = load_volume_record(ni_path,inname=name,use_percentile=use_percentile)
         self._volumes.append(rec)
         vol_idx = len(self._volumes) - 1
         self._layer_panel.add_row(vol_idx, rec)

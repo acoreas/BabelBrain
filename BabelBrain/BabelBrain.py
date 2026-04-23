@@ -1172,7 +1172,7 @@ class BabelBrain(QWidget):
         self._slice_viewer._btn_overlay.setEnabled(True)
         self._slice_viewer._btn_screenshot.setEnabled(True)
         self._slice_viewer._btn_reset.setEnabled(True)
-        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
+        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True)
         self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
         self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
         if CTnib:
