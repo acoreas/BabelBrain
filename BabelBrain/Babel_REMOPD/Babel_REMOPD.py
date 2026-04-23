@@ -4,28 +4,18 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import (QApplication, QWidget,QGridLayout,
-                QHBoxLayout,QVBoxLayout,QLineEdit,QDialog,
-                QGridLayout, QSpacerItem, QInputDialog, QFileDialog,
-                QErrorMessage, QMessageBox)
+from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread,Qt
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtGui import QPalette, QTextCursor
+
 
 import numpy as np
 
-from scipy.io import loadmat
-from matplotlib.pyplot import cm
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvas,NavigationToolbar2QT)
 
 #import cv2 as cv
 import os
 import sys
 import platform
-from datetime import datetime
 import time
 import yaml
 from BabelViscoFDTD.H5pySimple import ReadFromH5py

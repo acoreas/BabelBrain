@@ -4,19 +4,18 @@ Base Class for Tx GUI, not to be instantiated directly
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout,QMessageBox
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QPalette
 from BabelViscoFDTD.H5pySimple import ReadFromH5py
 
 import numpy as np
 import os
-from matplotlib.pyplot import cm
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import (
     FigureCanvas,NavigationToolbar2QT)
-from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
 
-from skimage.measure import label, regionprops, regionprops_table
+from GUIComponents.nifti_viewer import NiftiViewerWindow
+
+from skimage.measure import label, regionprops
 #auxiliary functions to measure metrics in acoustic fields
 
 def ellipsoid_axis_lengths(central_moments):
@@ -106,6 +105,9 @@ class BabelBaseTx(QWidget):
         #please note this one needs to be called after child class called its load_ui
         self.Widget.ShowWaterResultscheckBox.stateChanged.connect(self.UpdateAcResults)
         self.Widget.HideMarkscheckBox.stateChanged.connect(self.UpdateAcResults)
+        self.Widget.VisualizationcomboBox.currentIndexChanged.connect(self.UpdateVisualization)
+        self.Widget.VisualizationcomboBox.setEnabled(False)
+        
 
     @Slot()
     def NotifyError(self):
@@ -120,22 +122,15 @@ class BabelBaseTx(QWidget):
             #this will unblock for PyTest
             self._MainApp.testing_error = True
             self._MainApp.Widget.tabWidget.setEnabled(True)
-    
-    @Slot()
-    def UpdateAcResults(self):
-        '''
-        This is a common function for most Tx to show results
-        '''
-        self._MainApp.SetSuccesCode()
-        self.Widget.CalculateMechAdj.setEnabled(True)
+
+    def _showMatplotlibVisualization(self):
         if self._bRecalculated:
-            self._MainApp.hideClockDialog()
             if self.Widget.ShowWaterResultscheckBox.isEnabled()== False:
                 self.Widget.ShowWaterResultscheckBox.setEnabled(True)
             if self.Widget.HideMarkscheckBox.isEnabled()== False:
                 self.Widget.HideMarkscheckBox.setEnabled(True)
             self._MainApp.Widget.tabWidget.setEnabled(True)
-            self._MainApp.ThermalSim.setEnabled(True)
+            
             Water=ReadFromH5py(self._WaterSolName)
             Skull=ReadFromH5py(self._FullSolName)
 
@@ -207,6 +202,14 @@ class BabelBaseTx(QWidget):
             self._Skull = Skull
             self._ISkull = ISkull
             self._DistanceToTarget = DistanceToTarget
+
+            # --- tear down previous VTK viewer if present ---
+            if hasattr(self,'_slice_viewer'):
+                while (child := self._layout.takeAt(0)) is not None:
+                    w = child.widget()
+                    if w is not None:
+                        w.deleteLater()
+                del self._slice_viewer
         
             if hasattr(self,'_figAcField'):
                     children = []
@@ -269,7 +272,7 @@ class BabelBaseTx(QWidget):
 
             self._figAcField.canvas.draw_idle()
         else:
-            self._figAcField=Figure(figsize=(14, 12))
+            self._figAcField=Figure()
 
             if not hasattr(self,'_layout'):
                 self._layout = QVBoxLayout(self.Widget.AcField_plot1)
@@ -278,7 +281,9 @@ class BabelBaseTx(QWidget):
             toolbar=NavigationToolbar2QT(self.static_canvas,self)
             self._layout.addWidget(toolbar)
             self._layout.addWidget(self.static_canvas)
-            static_ax1,static_ax2 = self.static_canvas.figure.subplots(1,2)
+            # static_ax1,static_ax2 = self.static_canvas.figure.subplots(1,2)
+            static_ax1 = self.static_canvas.figure.add_axes([0.05, 0.15, 0.45, 0.8])  
+            static_ax2 = self.static_canvas.figure.add_axes([0.55, 0.15, 0.45, 0.8])  
             self._static_ax1 = static_ax1
             self._static_ax2 = static_ax2
 
@@ -321,6 +326,76 @@ class BabelBaseTx(QWidget):
         self._marker2.set_markerfacecolor(mc)
         self.Widget.IsppaScrollBars.update_labels(SelX, SelY)
         self._bRecalculated = False
+
+    def _showVTKVisualization(self):
+
+        mask_nib=self._MainApp._MaskNib 
+        
+        t1w_nib = self._MainApp._T1WNib
+
+        # Focal-point voxel (label == 5 in the mask)
+        mask_array = self._MainApp.FinalMaskRaw
+        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
+        self._LocFocalPoint = focal_voxel
+        self._FinalMask = mask_array
+
+        # --- tear down previous Matplotlib viewer if present ---
+        if hasattr(self,'_figAcField'):
+            children = []
+            for i in range(self._layout.count()):
+                child = self._layout.itemAt(i).widget()
+                if child:
+                    children.append(child)
+            for child in children:
+                child.deleteLater()
+            delattr(self,'_figAcField')
+            self.Widget.AcField_plot1.repaint()
+
+        # --- tear down previous viewer if present ---
+        if not hasattr(self, '_layout'):
+            self._layout = QVBoxLayout(self.Widget.AcField_plot1)
+        else:
+            while (child := self._layout.takeAt(0)) is not None:
+                w = child.widget()
+                if w is not None:
+                    w.deleteLater()
+
+        # --- create / re-create the VTK viewer ---
+        self._slice_viewer = NiftiViewerWindow()
+        self._layout.addWidget(self._slice_viewer)
+
+        self._slice_viewer.viewer.load_base(mask_nib,
+                                            focal_voxel,
+                                            'Tissue Type',
+                                            tissue_label=True)
+        self._slice_viewer._btn_overlay.setEnabled(True)
+        self._slice_viewer._btn_screenshot.setEnabled(True)
+        self._slice_viewer._btn_reset.setEnabled(True)
+        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
+        self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
+        self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+
+    @Slot()
+    def UpdateVisualization(self,index):
+        if self.Widget.VisualizationcomboBox.currentIndex()==0:
+            self._showVTKVisualization()
+        else:
+            self._showMatplotlibVisualization()
+    
+    @Slot()
+    def UpdateAcResults(self):
+        '''
+        This is a common function for most Tx to show results
+        '''
+        self._MainApp.SetSuccesCode()
+        self.Widget.CalculateMechAdj.setEnabled(True)
+        self.Widget.VisualizationcomboBox.setEnabled(True)
+        if self._bRecalculated:
+            self._MainApp.ThermalSim.setEnabled(True)
+            self._MainApp.hideClockDialog()
+
+        self.UpdateVisualization(0)
+        
  
     def GetExport(self):
         Export={}

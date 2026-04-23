@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QWidget,
     QLabel
 )
-from linetimer import CodeTimer
 from matplotlib import pyplot as plt
 from matplotlib.pyplot import cm
 import matplotlib.patches as mpatches
@@ -659,6 +658,7 @@ class BabelBrain(QWidget):
         self.Widget.VisualizationcomboBox.currentIndexChanged.connect(self.UpdateVisualization)
         self.Widget.HideMarkscheckBox.setVisible(False)
         self.Widget.TransparencyScrollBar.setVisible(False)
+        self.Widget.VisualizationcomboBox.setEnabled(False)
 
         if self.Config['TxSystem'] =='Single':
             USMaskkHzDropDown = self.Widget.USMaskkHzDropDown
@@ -957,6 +957,7 @@ class BabelBrain(QWidget):
         
         FinalMask=np.flip(self.FinalMaskRaw,axis=2)
         T1WData=np.flip(self._T1WDataRaw,axis=2)
+        self._T1WData=T1WData
         voxSize=self._T1WNib.header.get_zooms()
         x_vec=np.arange(self._T1WNib.shape[0])*voxSize[0]
         x_vec-=x_vec.mean()
@@ -1105,7 +1106,6 @@ class BabelBrain(QWidget):
                 
         patches = [ mpatches.Patch(color=colors[i], label=legends[i] ) for i in range(len(values)) ]
         leg=axes[-1].legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
-        self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
         self._figMasks.set_facecolor(self._BackgroundColorFigures)
         leg.get_frame().set_facecolor(self._BackgroundColorFigures)
         self.Widget.HideMarkscheckBox.setVisible(True)
@@ -1128,12 +1128,19 @@ class BabelBrain(QWidget):
         
         t1w_nib = self._T1WNib
 
+        CTnib = None
+        AirMask = None
+
+        if self.Config['bUseCT']:
+            CTnib=nibabel.load(self._prefix_path+'CT.nii.gz')
+            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
+                AirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz')
+            
         # Focal-point voxel (label == 5 in the mask)
         mask_array = self.FinalMaskRaw
         focal_voxel = np.array(np.where(mask_array == 5)).flatten()
         self._LocFocalPoint = focal_voxel
-        self._FinalMask = mask_array
-
+        
         # --- tear down previous Matplotlib viewer if present ---
         if hasattr(self,'_figMasks'):
             while ((child := self._layout.takeAt(0)) != None):
@@ -1168,6 +1175,17 @@ class BabelBrain(QWidget):
         self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
         self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
         self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+        if CTnib:
+            self._slice_viewer.viewer.add_overlay(CTnib,'CT')
+            self._slice_viewer.viewer._layer_panel._rows[2]._opacity_slider.setValue(100)
+            self._slice_viewer.viewer._layer_panel._rows[2]._cutoff_edit.setText('1')
+            self._slice_viewer.viewer._layer_panel._rows[2]._on_cutoff_changed()
+        if AirMask:
+            self._slice_viewer.viewer.add_overlay(AirMask,'Air')
+            self._slice_viewer.viewer._layer_panel._rows[3]._opacity_slider.setValue(100)
+            self._slice_viewer.viewer._layer_panel._rows[3]._cutoff_edit.setText('1')
+            self._slice_viewer.viewer._layer_panel._rows[3]._on_cutoff_changed()
+            self._slice_viewer.viewer._layer_panel._rows[3]._cmap_combo.setCurrentIndex(4)
 
 
     @Slot()
@@ -1176,6 +1194,7 @@ class BabelBrain(QWidget):
             self._showVTKVisualization(bDeleteOnly)
         else:
             self._showMatplotlibVisualization(bDeleteOnly)
+        self.Widget.VisualizationcomboBox.setEnabled(True)
 
     def UpdateMask(self, bDeleteOnly=False):
         self.Widget.tabWidget.setEnabled(True)
@@ -1185,6 +1204,7 @@ class BabelBrain(QWidget):
         except:
             raise ValueError("BabelViscoInput file does not exist. This is most likely due to a crash related to high PPW, please explore using lower PPW")
         self.FinalMaskRaw=Data.get_fdata()
+        self._FinalMask = np.flip(self.FinalMaskRaw,axis=2)
 
         self._bSegmentedBrain = np.max(self.FinalMaskRaw)>5
 
@@ -1196,6 +1216,7 @@ class BabelBrain(QWidget):
         self.UpdateVisualization(0,bDeleteOnly)
         self.UpdateAcousticTab()
         self.hideClockDialog()
+        self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
 
 
     @Slot()

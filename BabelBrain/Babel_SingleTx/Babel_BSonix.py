@@ -5,30 +5,15 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import (QApplication, QWidget,QGridLayout,
-                QHBoxLayout,QVBoxLayout,QLineEdit,QDialog,
-                QGridLayout, QSpacerItem, QInputDialog, QFileDialog,
-                QErrorMessage, QMessageBox)
-from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread
+from PySide6.QtWidgets import QMessageBox
+from PySide6.QtCore import QFile,Slot,QThread
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtGui import QPalette, QTextCursor, QColor
 
 import numpy as np
 
-from scipy.io import loadmat
-from matplotlib.pyplot import cm
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvas,NavigationToolbar2QT)
 import os
 import sys
-import shutil
-from datetime import datetime
-import time
-import yaml
-from BabelViscoFDTD.H5pySimple import ReadFromH5py, SaveToH5py
-from CalculateFieldProcess import CalculateFieldProcess
+from BabelViscoFDTD.H5pySimple import ReadFromH5py
 from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
 
 from trimesh import creation

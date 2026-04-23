@@ -968,17 +968,7 @@ class LayerRow(QWidget):
         self._cutoff_edit.setToolTip(
             "Mask values below this threshold (leave empty to disable)")
 
-        def _on_cutoff_changed():
-            txt = self._cutoff_edit.text().strip()
-            if txt == "":
-                self.cutoff_changed.emit(self._vol_idx, None)
-            else:
-                try:
-                    self.cutoff_changed.emit(self._vol_idx, float(txt))
-                except ValueError:
-                    pass
-
-        self._cutoff_edit.editingFinished.connect(_on_cutoff_changed)
+        self._cutoff_edit.editingFinished.connect(self._on_cutoff_changed)
         hrow.addWidget(self._cutoff_edit)
         if self._tissue_label:
             self._cutoff_edit.setVisible(False)
@@ -1070,6 +1060,15 @@ class LayerRow(QWidget):
             self._cmap_combo.setVisible(False)
         lay.addLayout(crow)
 
+    def _on_cutoff_changed(self):
+        txt = self._cutoff_edit.text().strip()
+        if txt == "":
+            self.cutoff_changed.emit(self._vol_idx, None)
+        else:
+            try:
+                self.cutoff_changed.emit(self._vol_idx, float(txt))
+            except ValueError:
+                pass
 
 # ── LayerPanel ─────────────────────────────────────────────────────────────
 
