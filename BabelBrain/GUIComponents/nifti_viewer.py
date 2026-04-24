@@ -856,6 +856,204 @@ class ElidedLabel(QLabel):
         painter.drawText(self.rect(), self.alignment() or Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
 
 
+# ── ColourBar ──────────────────────────────────────────────────────────────
+
+def _cmap_rgb(name: str | None, t: float) -> tuple[int, int, int]:
+    """
+    Sample a colourmap at normalised position t ∈ [0, 1].
+    Returns (R, G, B) in 0-255 range.  Mirrors the logic in _make_lut exactly
+    so the bar is always consistent with what VTK renders.
+    """
+    def lerp(a, b, f): return a + f * (b - a)
+
+    if name is None or name == "grey":
+        v = int(t * 255)
+        return (v, v, v)
+
+    elif name == "hot":
+        # hue 0→0.1667, sat 1→0, val 0.5→1
+        h = t * 0.1667
+        s = 1.0 - t
+        v = 0.5 + t * 0.5
+        return _hsv_to_rgb255(h, s, v)
+
+    elif name == "cool":
+        # hue 0.5→0.833, sat=1, val=1
+        h = 0.5 + t * 0.333
+        return _hsv_to_rgb255(h, 1.0, 1.0)
+
+    elif name == "green":
+        return _hsv_to_rgb255(0.333, t, t)
+
+    elif name == "red":
+        return _hsv_to_rgb255(0.0, t, t)
+
+    elif name == "jet":
+        jet_cps = [
+            (0.000, 0.000, 0.000, 0.500),
+            (0.125, 0.000, 0.000, 1.000),
+            (0.375, 0.000, 1.000, 1.000),
+            (0.625, 1.000, 1.000, 0.000),
+            (0.875, 1.000, 0.000, 0.000),
+            (1.000, 0.500, 0.000, 0.000),
+        ]
+        for k in range(len(jet_cps) - 1):
+            t0, r0, g0, b0 = jet_cps[k]
+            t1, r1, g1, b1 = jet_cps[k + 1]
+            if t0 <= t <= t1:
+                f = (t - t0) / (t1 - t0) if t1 > t0 else 0.
+                return (int(lerp(r0, r1, f) * 255),
+                        int(lerp(g0, g1, f) * 255),
+                        int(lerp(b0, b1, f) * 255))
+        return (128, 0, 0)
+
+    return (int(t * 255),) * 3
+
+
+def _hsv_to_rgb255(h, s, v) -> tuple[int, int, int]:
+    """HSV (0-1 each) → (R, G, B) 0-255."""
+    if s == 0:
+        val = int(v * 255)
+        return (val, val, val)
+    h6 = (h % 1.0) * 6.0
+    i  = int(h6)
+    f  = h6 - i
+    p  = v * (1 - s)
+    q  = v * (1 - s * f)
+    t_ = v * (1 - s * (1 - f))
+    rgb = [(v, t_, p), (q, v, p), (p, v, t_),
+           (p, q, v), (t_, p, v), (v, p, q)][i % 6]
+    return tuple(int(c * 255) for c in rgb)
+
+
+class ColourBar(QWidget):
+    """
+    A vertical colourbar showing the window/level mapping for the currently
+    selected volume.
+
+    The bar spans [level - window/2, level + window/2] (the visible data
+    range).  Five evenly-spaced tick marks with numeric labels are drawn on
+    the right side.  The colourmap exactly mirrors the LUT used by VTK.
+
+    Call update_bar(rec) whenever the selected volume or its WL/cmap changes.
+    """
+
+    BAR_W   = 24    # width of the gradient strip in pixels
+    TICK_W  = 6     # tick mark length
+    PAD_L   = 6     # left padding
+    PAD_R   = 52    # right padding (room for labels)
+    PAD_T   = 12    # top / bottom padding
+    PAD_B   = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cmap:   str | None = None
+        self._lo:     float = 0.
+        self._hi:     float = 1.
+        self._window: float = 1.
+        self._level:  float = 0.5
+        self._cutoff: float | None = None
+
+        total_w = self.PAD_L + self.BAR_W + self.TICK_W + self.PAD_R
+        self.setFixedWidth(total_w)
+        self.setMinimumHeight(120)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setStyleSheet(f"background:{BG_DARK};")
+
+    def update_bar(self, rec: "VolumeRecord") -> None:
+        self._cmap   = CMAPS.get(rec.cmap)
+        self._lo     = rec.lo
+        self._hi     = rec.hi
+        self._window = rec.wl_window
+        self._level  = rec.wl_level
+        self._cutoff = rec.cutoff
+        self.update()   # trigger repaint
+
+    def render_to_image(self, width: int, height: int) -> "QImage":
+        """
+        Render the colourbar into a QImage of exactly (width, height) pixels
+        with a white background.  Used by grab_screenshot so the bar matches
+        the VTK viewport height precisely, regardless of on-screen widget size.
+        """
+        from PySide6.QtGui import QImage, QPainter, QColor
+        img = QImage(width, height, QImage.Format.Format_RGB32)
+        img.fill(QColor("white"))
+        painter = QPainter(img)
+        self._paint_into(painter, width, height, bg_color=QColor("white"),
+                         label_color=QColor("#222222"), tick_color=QColor("#555566"),
+                         border_color=QColor("#888899"))
+        painter.end()
+        return img
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        from PySide6.QtGui import QPainter, QColor
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        self._paint_into(painter, self.width(), self.height(),
+                         bg_color=QColor(BG_DARK),
+                         label_color=QColor(TEXT_DIM),
+                         tick_color=QColor("#888899"),
+                         border_color=QColor("#444455"))
+        painter.end()
+
+    def _paint_into(self, painter, w: int, h: int,
+                    bg_color, label_color, tick_color, border_color) -> None:
+        from PySide6.QtGui import QColor, QFont
+
+        bar_x = self.PAD_L
+        bar_h = h - self.PAD_T - self.PAD_B
+        bar_y = self.PAD_T
+
+        if bar_h < 4:
+            return
+
+        half_w    = self._window / 2.0
+        disp_lo   = self._level - half_w
+        disp_hi   = self._level + half_w
+        data_span = self._hi - self._lo or 1.0
+
+        # ── gradient strip ───────────────────────────────────────────────────
+        for py in range(bar_h):
+            t_bar  = 1.0 - py / max(bar_h - 1, 1)
+            scalar = disp_lo + t_bar * (disp_hi - disp_lo)
+            t_lut  = max(0.0, min(1.0, (scalar - self._lo) / data_span))
+
+            if self._cutoff is not None and scalar < self._cutoff:
+                painter.setPen(bg_color)
+            else:
+                r, g, b = _cmap_rgb(self._cmap, t_lut)
+                painter.setPen(QColor(r, g, b))
+
+            painter.drawLine(bar_x, bar_y + py,
+                             bar_x + self.BAR_W - 1, bar_y + py)
+
+        # ── border ───────────────────────────────────────────────────────────
+        painter.setPen(border_color)
+        painter.drawRect(bar_x, bar_y, self.BAR_W - 1, bar_h - 1)
+
+        # ── ticks and labels ─────────────────────────────────────────────────
+        tick_x  = bar_x + self.BAR_W
+        label_x = tick_x + self.TICK_W + 2
+
+        font = QFont()
+        font.setPixelSize(10)
+        painter.setFont(font)
+
+        for i in range(5):
+            t_tick = i / 4
+            scalar = disp_lo + t_tick * (disp_hi - disp_lo)
+            py     = bar_y + bar_h - 1 - int(t_tick * (bar_h - 1))
+
+            painter.setPen(tick_color)
+            painter.drawLine(tick_x, py, tick_x + self.TICK_W, py)
+
+            painter.setPen(label_color)
+            painter.drawText(label_x, py - 8,
+                             w - label_x - 2, 18,
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             f"{scalar:.4g}")
+
+
 # ── LayerRow ───────────────────────────────────────────────────────────────
 
 class LayerRow(QWidget):
@@ -1231,6 +1429,10 @@ class NiftiViewer(QWidget):
             spl.addWidget(vp)
         outer_spl.addWidget(spl)
 
+        # Colourbar — narrow strip between viewports and layer panel
+        self._colorbar = ColourBar(self)
+        outer_spl.addWidget(self._colorbar)
+
         # Layer panel
         self._layer_panel = LayerPanel(self)
         self._layer_panel.opacity_changed.connect(self._on_opacity_changed)
@@ -1241,9 +1443,10 @@ class NiftiViewer(QWidget):
         self._layer_panel.cutoff_changed.connect(self._on_cutoff_changed)
         outer_spl.addWidget(self._layer_panel)
 
-        # Viewports expand, layer panel stays at its min/max width
+        # Viewports expand, colorbar and layer panel stay fixed
         outer_spl.setStretchFactor(0, 1)
         outer_spl.setStretchFactor(1, 0)
+        outer_spl.setStretchFactor(2, 0)
 
         root.addWidget(outer_spl)
 
@@ -1344,6 +1547,11 @@ class NiftiViewer(QWidget):
             self._vps[1]._slider.setValue(int(target_med[1]))
             self._vps[2]._slider.setValue(int(target_med[2]))
 
+        # 5. Refresh colorbar with reset WL
+        if self._selected_vol < len(self._volumes):
+            self._colorbar.update_bar(self._volumes[self._selected_vol])
+
+
     def affine_to_medical_coords(
         self,
         ijk: tuple[float, float, float],
@@ -1415,11 +1623,11 @@ class NiftiViewer(QWidget):
 
     def grab_screenshot(self, path: str) -> None:
         """
-        Capture all three viewports and save them side-by-side as a PNG.
+        Capture all three viewports plus the colourbar and save side-by-side as PNG.
 
         Each viewport is captured via vtkWindowToImageFilter at its native
-        render-window resolution, then the three images are stitched
-        horizontally using QPainter on a QImage.
+        render-window resolution.  The colourbar is captured via QWidget.grab().
+        All strips are stitched horizontally using QPainter on a QImage.
         """
         from vtkmodules.vtkIOImage import vtkPNGWriter
         from vtkmodules.vtkRenderingCore import vtkWindowToImageFilter
@@ -1429,6 +1637,7 @@ class NiftiViewer(QWidget):
         strips: list[QImage] = []
         tmp_files: list[str] = []
 
+        # Capture each viewport via VTK (back buffer, no UI chrome)
         for vp in self._vps:
             rw = vp.vtk_widget.GetRenderWindow()
             rw.Render()
@@ -1439,7 +1648,6 @@ class NiftiViewer(QWidget):
             wti.ReadFrontBufferOff()
             wti.Update()
 
-            # Write to a temp PNG and read back as QImage
             fd, tmp = tempfile.mkstemp(suffix=".png")
             _os.close(fd)
             tmp_files.append(tmp)
@@ -1449,25 +1657,31 @@ class NiftiViewer(QWidget):
             writer.SetInputConnection(wti.GetOutputPort())
             writer.Write()
 
-            img = QImage(tmp)
-            strips.append(img)
+            strips.append(QImage(tmp))
 
-        # Stitch side-by-side
-        total_w = sum(i.width()  for i in strips)
-        max_h   = max(i.height() for i in strips)
+        # Capture the colourbar at exactly the same height as the VTK strips,
+        # rendered on a white background into a fresh QImage (no widget sizing).
+        vtk_h = strips[0].height() if strips else self._colorbar.height()
+        cb_img = self._colorbar.render_to_image(self._colorbar.width(), vtk_h)
+        strips.append(cb_img)
+
+        # Stitch all strips side-by-side on a white background
+        total_w = sum(img.width()  for img in strips)
+        max_h   = max(img.height() for img in strips)
         combined = QImage(total_w, max_h, QImage.Format.Format_RGB32)
-        combined.fill(QColor(BG_DARK))
+        combined.fill(QColor("white"))
 
         painter = QPainter(combined)
         x = 0
         for img in strips:
-            painter.drawImage(x, 0, img)
+            # Centre each strip vertically if heights differ
+            y_off = (max_h - img.height()) // 2
+            painter.drawImage(x, y_off, img)
             x += img.width()
         painter.end()
 
         combined.save(path, "PNG")
 
-        # Clean up temp files
         for tmp in tmp_files:
             try:
                 _os.unlink(tmp)
@@ -1478,6 +1692,8 @@ class NiftiViewer(QWidget):
 
     def _on_wl_select_changed(self, vol_idx: int) -> None:
         self._selected_vol = vol_idx
+        if vol_idx < len(self._volumes):
+            self._colorbar.update_bar(self._volumes[vol_idx])
 
     def _on_wl_drag(self, dw_norm: float, dl_norm: float) -> None:
         """
@@ -1496,6 +1712,7 @@ class NiftiViewer(QWidget):
         rec.wl_level  = rec.wl_level  - dl_norm * scale
         for vp in self._vps:
             vp.set_wl(idx, rec.wl_window, rec.wl_level)
+        self._colorbar.update_bar(rec)
         self.wl_updated.emit(idx, rec.wl_window, rec.wl_level)
 
     def _on_wl_end(self) -> None:
@@ -1516,6 +1733,8 @@ class NiftiViewer(QWidget):
         self._volumes[vol_idx].cmap = cmap
         for vp in self._vps:
             vp.update_layer_property(vol_idx, self._volumes[vol_idx])
+        if vol_idx == self._selected_vol:
+            self._colorbar.update_bar(self._volumes[vol_idx])
 
     def _on_cutoff_changed(self, vol_idx: int, cutoff) -> None:
         if vol_idx >= len(self._volumes):
@@ -1523,6 +1742,8 @@ class NiftiViewer(QWidget):
         self._volumes[vol_idx].cutoff = cutoff   # float or None
         for vp in self._vps:
             vp.update_layer_property(vol_idx, self._volumes[vol_idx])
+        if vol_idx == self._selected_vol:
+            self._colorbar.update_bar(self._volumes[vol_idx])
 
     def _on_visibility_changed(self, vol_idx: int, visible: bool) -> None:
         if vol_idx >= len(self._volumes):
