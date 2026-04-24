@@ -315,7 +315,7 @@ def load_volume_record(ni_path: object, inname='',use_percentile=False) -> tuple
     affine = img.affine.astype(np.float64)
     sp, _  = _decompose(affine)
     if use_percentile:
-        perc=np.percentile(data.flatten(),[1,99])
+        perc=np.percentile(data.flatten(),[0.5,99.5])
         lo=perc[0]
         hi=perc[1]
     else: 

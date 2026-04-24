@@ -16,6 +16,7 @@ from matplotlib.backends.backend_qtagg import (
 from GUIComponents.nifti_viewer import NiftiViewerWindow
 
 from skimage.measure import label, regionprops
+import nibabel
 #auxiliary functions to measure metrics in acoustic fields
 
 def ellipsoid_axis_lengths(central_moments):
@@ -333,6 +334,9 @@ class BabelBaseTx(QWidget):
         
         t1w_nib = self._MainApp._T1WNib
 
+        NiftiSkull=nibabel.load(self._FullSolName.replace('DataForSim.h5','FullElasticSolution_Sub_NORM.nii.gz'))
+        NiftiWater=nibabel.load(self._FullSolName.replace('DataForSim.h5','Water_FullElasticSolution_Sub_NORM.nii.gz'))
+
         # Focal-point voxel (label == 5 in the mask)
         mask_array = self._MainApp.FinalMaskRaw
         focal_voxel = np.array(np.where(mask_array == 5)).flatten()
@@ -371,9 +375,19 @@ class BabelBaseTx(QWidget):
         self._slice_viewer._btn_overlay.setEnabled(True)
         self._slice_viewer._btn_screenshot.setEnabled(True)
         self._slice_viewer._btn_reset.setEnabled(True)
-        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W')
+        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True)
         self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
-        self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+        self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(100)
+        self._slice_viewer.viewer.add_overlay(NiftiSkull,'Skull')
+        self._slice_viewer.viewer._layer_panel._rows[2]._opacity_slider.setValue(100)
+        self._slice_viewer.viewer._layer_panel._rows[2]._cmap_combo.setCurrentIndex(5)
+        self._slice_viewer.viewer._layer_panel._rows[2]._cutoff_edit.setText('0.25')
+        self._slice_viewer.viewer._layer_panel._rows[2]._on_cutoff_changed()
+        self._slice_viewer.viewer.add_overlay(NiftiWater,'Water')
+        self._slice_viewer.viewer._layer_panel._rows[3]._cmap_combo.setCurrentIndex(5)
+        self._slice_viewer.viewer._layer_panel._rows[3]._cutoff_edit.setText('0.25')
+        self._slice_viewer.viewer._layer_panel._rows[3]._on_cutoff_changed()
+        self._slice_viewer.viewer._layer_panel._rows[3]._eye_btn.toggle()
 
     @Slot()
     def UpdateVisualization(self,index):
