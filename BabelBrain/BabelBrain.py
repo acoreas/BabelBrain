@@ -666,6 +666,7 @@ class BabelBrain(QWidget):
             USMaskkHzDropDown.lineEdit().textChanged.connect(self.StartManualMaskFrequency)
             USMaskkHzDropDown.lineEdit().editingFinished.connect(self.UpdateManualMaskFrequency)
 
+
     @Slot()
     def StartManualMaskFrequency(self,txt):
         try:
@@ -735,6 +736,8 @@ class BabelBrain(QWidget):
         stdout.outputWritten.connect(self.handleOutput)
 #        stderr = OutputWrapper(self, False)
 #        stderr.outputWritten.connect(self.handleOutput)
+
+        self.Widget.vtkVisualizationqPushButton.clicked.connect(self.OpenVTKVisualization)
 
     def UpdateWindowTitle(self):
         self.setWindowTitle('BabelBrain V'+
@@ -1218,6 +1221,60 @@ class BabelBrain(QWidget):
         self.hideClockDialog()
         self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
 
+    @Slot()
+    def OpenVTKVisualization(self):
+        mask_nib=self._MaskNib 
+        
+        t1w_nib = self._T1WNib
+
+        CTnib = None
+        AirMask = None
+
+        if self.Config['bUseCT']:
+            CTnib=nibabel.load(self._prefix_path+'CT.nii.gz')
+            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
+                AirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz')
+            
+        # Focal-point voxel (label == 5 in the mask)
+        mask_array = self.FinalMaskRaw
+        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
+        self._LocFocalPoint = focal_voxel
+        
+
+        # --- create / re-create the VTK viewer ---
+        self._vtk_visualization = NiftiViewerWindow()
+
+
+        self._vtk_visualization.viewer.load_base(mask_nib,
+                                            focal_voxel,
+                                            'Tissue Type',
+                                            tissue_label=True)
+        self._vtk_visualization._btn_overlay.setEnabled(True)
+        self._vtk_visualization._btn_screenshot.setEnabled(True)
+        self._vtk_visualization._btn_reset.setEnabled(True)
+        self._vtk_visualization.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True)
+        self._vtk_visualization.viewer._on_cmap_changed(0,"TissueLabel")
+        self._vtk_visualization.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+        if CTnib:
+            self._vtk_visualization.viewer.add_overlay(CTnib,'CT')
+            self._vtk_visualization.viewer._layer_panel._rows[2]._opacity_slider.setValue(100)
+            self._vtk_visualization.viewer._layer_panel._rows[2]._cutoff_edit.setText('1')
+            self._vtk_visualization.viewer._layer_panel._rows[2]._on_cutoff_changed()
+        if AirMask:
+            self._vtk_visualization.viewer.add_overlay(AirMask,'Air')
+            self._vtk_visualization.viewer._layer_panel._rows[3]._opacity_slider.setValue(100)
+            self._vtk_visualization.viewer._layer_panel._rows[3]._cutoff_edit.setText('1')
+            self._vtk_visualization.viewer._layer_panel._rows[3]._on_cutoff_changed()
+            self._vtk_visualization.viewer._layer_panel._rows[3]._cmap_combo.setCurrentIndex(4)
+
+        self._vtk_visualization.resize(1580, 500)
+        self._vtk_visualization.show()
+        self._vtk_visualization.closed.connect(self._closingVtkVisualization)
+
+    @Slot()
+    def _closingVtkVisualization(self):
+        delattr(self,'_vtk_visualization')
+        print(hasattr(self,'_vtk_visualization'))
 
     @Slot()
     def HideMarks(self,v):

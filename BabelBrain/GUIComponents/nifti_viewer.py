@@ -13,7 +13,7 @@ Features
   • Individual eye-icon toggle to show/hide each overlay.
   • Both AFFINE mode (native voxel axes of file 1) and MEDICAL mode
     (RAS world axes: Axial / Coronal / Sagittal) are supported.
-  • Radiological flip (L↔R) available in medical mode.
+  • Neurogical flip (L↔R) available in medical mode.
   • Crosshair lines synchronised across all three views on scroll.
 
 Architecture
@@ -231,9 +231,10 @@ class PlaneGeometry:
     centre:  np.ndarray
     step:    float
     n:       int
-    ps:      float
-    flip_lr: bool = False   # True → place camera on opposite side (radiological flip)
-    flip_up: bool = False
+    ps:      float        # max(plane_w, plane_h) / 2  — default parallel scale
+    plane_w: float = 0.   # physical width of the image plane (right direction)
+    plane_h: float = 0.   # physical height of the image plane (up direction)
+    flip_lr: bool  = False
 
 
 # ── VolumeRecord ───────────────────────────────────────────────────────────
@@ -344,17 +345,20 @@ def affine_plane_geoms(affine: np.ndarray, shape: tuple) -> list[PlaneGeometry]:
     ctr = (affine @ mid)[:3]
     def ps(a, b): return max(a, b) / 2.
     return [
-        PlaneGeometry(normal=dj, right=di, up=dk,  centre=ctr.copy(), step=sj, n=nj, ps=ps(ni*si, nk*sk),flip_lr=True),
-        PlaneGeometry(normal=di, right=dj, up=dk,  centre=ctr.copy(), step=si, n=ni, ps=ps(nj*sj, nk*sk)),
-        PlaneGeometry(normal=dk, right=di, up=-dj,  centre=ctr.copy(), step=sk, n=nk, ps=ps(ni*si, nj*sj),flip_lr=True)
+        PlaneGeometry(normal=dj, right=di, up=dk,  centre=ctr.copy(), step=sj, n=nj,
+                      ps=ps(ni*si, nk*sk), plane_w=float(ni*si), plane_h=float(nk*sk),flip_lr=True),
+        PlaneGeometry(normal=di, right=dj, up=dk,  centre=ctr.copy(), step=si, n=ni,
+                      ps=ps(nj*sj, nk*sk), plane_w=float(nj*sj), plane_h=float(nk*sk)),
+        PlaneGeometry(normal=dk, right=di, up=-dj,  centre=ctr.copy(), step=sk, n=nk,
+                      ps=ps(ni*si, nj*sj), plane_w=float(ni*si), plane_h=float(nj*sj),flip_lr=True),
     ]
 
 
-def medical_plane_geoms(ras_min, ras_max, iso, radiological) -> list[PlaneGeometry]:
+def medical_plane_geoms(ras_min, ras_max, iso, neurogical) -> list[PlaneGeometry]:
     """
     Three PlaneGeometry objects for the three RAS-axis planes.
 
-    Radiological L/R flip is achieved by setting flip_lr=True, which makes
+    Neurogical L/R flip is achieved by setting flip_lr=True, which makes
     _init_camera place the camera on the opposite side of the focal plane
     (position = focal - normal*DIST instead of + normal*DIST).  VTK then
     computes screen-right = up × viewPlaneNormal where viewPlaneNormal = -normal,
@@ -362,7 +366,7 @@ def medical_plane_geoms(ras_min, ras_max, iso, radiological) -> list[PlaneGeomet
     up unchanged.
     """
     ctr  = (ras_min + ras_max) / 2.
-    flip = radiological
+    flip = neurogical
 
     ax_x  = np.array([1.,  0., 0.])   # right (always +X in world; flip is in camera)
     ax_y  = np.array([0.,  1., 0.])
@@ -374,9 +378,12 @@ def medical_plane_geoms(ras_min, ras_max, iso, radiological) -> list[PlaneGeomet
     ex = ras_max[0]-ras_min[0]; ey = ras_max[1]-ras_min[1]; ez = ras_max[2]-ras_min[2]
 
     return [
-        PlaneGeometry(normal=ax_z,  right=ax_x, up=ax_y, centre=ctr.copy(), step=iso, n=ns(2), ps=ps(ex,ey), flip_lr=flip),
-        PlaneGeometry(normal=ax_y,  right=ax_x, up=ax_z, centre=ctr.copy(), step=iso, n=ns(1), ps=ps(ex,ez), flip_lr=flip),
-        PlaneGeometry(normal=ax_x,  right=sa_r, up=ax_z, centre=ctr.copy(), step=iso, n=ns(0), ps=ps(ey,ez), flip_lr=False),
+        PlaneGeometry(normal=ax_z,  right=ax_x, up=ax_y, centre=ctr.copy(), step=iso, n=ns(2),
+                      ps=ps(ex,ey), plane_w=float(ex), plane_h=float(ey), flip_lr=not flip),
+        PlaneGeometry(normal=ax_y,  right=ax_x, up=ax_z, centre=ctr.copy(), step=iso, n=ns(1),
+                      ps=ps(ex,ez), plane_w=float(ex), plane_h=float(ez), flip_lr=flip),
+        PlaneGeometry(normal=ax_x,  right=sa_r, up=ax_z, centre=ctr.copy(), step=iso, n=ns(0),
+                      ps=ps(ey,ez), plane_w=float(ey), plane_h=float(ez), flip_lr=True),
     ]
 
 
@@ -568,7 +575,7 @@ class SliceViewport(QFrame):
         self._slider.setFixedHeight(24)
         self._slider.valueChanged.connect(self._on_slider)
         lay.addWidget(self._slider)
-        self.setFixedWidth(300)
+        # self.setFixedWidth(300)
 
     def set_title(self, t):
         self._lbl_title.setText(t.upper())
@@ -584,6 +591,10 @@ class SliceViewport(QFrame):
         self._cross_v = _make_line_actor(ACCENT)
         self.renderer.AddActor(self._cross_h)
         self.renderer.AddActor(self._cross_v)
+
+        # Orientation label actors (L/R/A/P/S/I) — only shown in medical mode
+        self._orient_actors: list[vtk.vtkTextActor] = []
+        self._build_orient_actors()
 
         self.renderer.GetActiveCamera().ParallelProjectionOn()
 
@@ -608,6 +619,59 @@ class SliceViewport(QFrame):
         """Called by NiftiViewer to route WL drag to the selected volume."""
         self._wl_drag_cb = on_drag
         self._wl_end_cb  = on_end
+
+    # ── Orientation labels ─────────────────────────────────────────────────
+
+    def _build_orient_actors(self) -> None:
+        """
+        Create four vtkTextActor objects (left, right, top, bottom) positioned
+        in normalised viewport coordinates so they always hug the edges regardless
+        of pan/zoom.  They start invisible; set_orientation_labels() shows them.
+        """
+        FONT_SIZE = 14
+        BOLD      = True
+        COLOR     = (1.0, 1.0, 0.6)   # warm yellow — readable on dark background
+
+        # Positions in normalised viewport coords and horizontal justification.
+        # Justification integers are stable across VTK versions:
+        #   0 = left,  1 = centred,  2 = right  (vtkTextProperty constants)
+        configs = [
+            (0.02,  0.50, 0),   # screen-left  label  (left-justified)
+            (0.98,  0.50, 2),   # screen-right label  (right-justified)
+            (0.50,  0.97, 1),   # screen-top   label  (centred)
+            (0.50,  0.03, 1),   # screen-bottom label (centred)
+        ]
+
+        self._orient_actors = []
+        for nx, ny, halign in configs:
+            actor = vtk.vtkTextActor()
+            actor.SetInput("")
+            actor.GetTextProperty().SetFontSize(FONT_SIZE)
+            actor.GetTextProperty().SetBold(BOLD)
+            actor.GetTextProperty().SetColor(*COLOR)
+            actor.GetTextProperty().SetShadow(True)
+            actor.GetTextProperty().SetJustification(halign)
+            actor.GetTextProperty().SetVerticalJustificationToCentered()
+            actor.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+            actor.SetPosition(nx, ny)
+            actor.VisibilityOff()
+            self.renderer.AddActor2D(actor)
+            self._orient_actors.append(actor)
+
+    def set_orientation_labels(self, left: str, right: str,
+                                top: str,  bottom: str) -> None:
+        """Show anatomical labels at the four edges of the viewport."""
+        texts = [left, right, top, bottom]
+        for actor, text in zip(self._orient_actors, texts):
+            actor.SetInput(text)
+            actor.VisibilityOn()
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def clear_orientation_labels(self) -> None:
+        """Hide all orientation labels (used in affine mode)."""
+        for actor in self._orient_actors:
+            actor.VisibilityOff()
+        self.vtk_widget.GetRenderWindow().Render()
 
     def reset_camera(self) -> None:
         """
@@ -779,18 +843,50 @@ class SliceViewport(QFrame):
     def _init_camera(self, index: int) -> None:
         focal  = self._focal_for(index)
         DIST   = 2000.
-        # Radiological flip: place camera on the opposite side of the focal plane.
-        # VTK screen-right = up × viewPlaneNormal, where viewPlaneNormal points
-        # from scene toward camera.  Flipping the camera side negates viewPlaneNormal,
-        # which negates screen-right (L↔R swap) while keeping up unchanged.
         side   = -1. if self._pg.flip_lr else 1.
         cam    = self.renderer.GetActiveCamera()
         cam.ParallelProjectionOn()
         cam.SetFocalPoint(*focal.tolist())
         cam.SetPosition(*(focal + self._pg.normal * DIST * side).tolist())
         cam.SetViewUp(*self._pg.up.tolist())
-        cam.SetParallelScale(self._pg.ps)
+        cam.SetParallelScale(self._fit_parallel_scale())
         cam.SetClippingRange(1., DIST * 2.)
+
+    def _fit_parallel_scale(self) -> float:
+        """
+        Compute the parallel scale that fits the entire image plane in the
+        current viewport without cropping either axis.
+
+        VTK parallel_scale = half the world-space height shown in the viewport.
+        The viewport shows:
+          world_height = 2 * ps
+          world_width  = 2 * ps * (vp_w / vp_h)
+
+        For the image to fit without cropping:
+          ps >= plane_h / 2                      (fits vertically)
+          ps >= plane_w * vp_h / (2 * vp_w)     (fits horizontally)
+
+        Taking the max satisfies both.
+        """
+        if self._pg is None:
+            return 1.0
+        pw = self._pg.plane_w or self._pg.ps * 2.
+        ph = self._pg.plane_h or self._pg.ps * 2.
+        vp_w = self.vtk_widget.width()
+        vp_h = self.vtk_widget.height()
+        if vp_w <= 0 or vp_h <= 0:
+            return self._pg.ps
+        ps_v = ph / 2.0                       # fits vertically
+        ps_h = pw * vp_h / (2.0 * vp_w)      # fits horizontally
+        return max(ps_v, ps_h)
+
+    def resizeEvent(self, event) -> None:     # type: ignore[override]
+        """Refit the parallel scale whenever the viewport is resized."""
+        super().resizeEvent(event)
+        if self._pg is not None:
+            ps = self._fit_parallel_scale()
+            self.renderer.GetActiveCamera().SetParallelScale(ps)
+            self.vtk_widget.GetRenderWindow().Render()
 
     def _move_to_slice(self, index: int) -> None:
         if self._pg is None:
@@ -1392,7 +1488,7 @@ class NiftiViewer(QWidget):
         self._ras_min:       np.ndarray | None = None
         self._ras_max:       np.ndarray | None = None
         self._mode           = self.MODE_AFFINE
-        self._radiological   = False
+        self._neurogical   = False
         self._geoms:         list[PlaneGeometry] = []
         self._half_len:      float = 100.
         self._selected_vol:  int = 0
@@ -1488,16 +1584,16 @@ class NiftiViewer(QWidget):
 
         return shape, zooms, code
 
-    def set_mode(self, mode: str, radiological: bool = False) -> None:
+    def set_mode(self, mode: str, neurogical: bool = False) -> None:
         self._mode = mode
-        self._radiological = radiological
+        self._neurogical = neurogical
         if self._volumes:
             self._refresh()
 
-    def set_radiological(self, enabled: bool) -> None:
-        if self._radiological == enabled:
+    def set_neurological(self, enabled: bool) -> None:
+        if self._neurogical == enabled:
             return
-        self._radiological = enabled
+        self._neurogical = enabled
         if self._mode == self.MODE_MEDICAL and self._volumes:
             self._refresh()
 
@@ -1605,7 +1701,7 @@ class NiftiViewer(QWidget):
         iso   = float(np.min(sp))
 
         geoms = medical_plane_geoms(
-            self._ras_min, self._ras_max, iso, radiological=False)
+            self._ras_min, self._ras_max, iso, neurogical=False)
 
         def _clamp(val, pg):
             return float(np.clip(val, 0, pg.n - 1))
@@ -1773,7 +1869,7 @@ class NiftiViewer(QWidget):
             sp, _ = _decompose(self._base_affine)
             iso   = float(np.min(sp))
             self._geoms = medical_plane_geoms(
-                self._ras_min, self._ras_max, iso, self._radiological)
+                self._ras_min, self._ras_max, iso, self._neurogical)
 
         names = AFFINE_NAMES if self._mode == self.MODE_AFFINE else MEDICAL_NAMES
 
@@ -1784,6 +1880,13 @@ class NiftiViewer(QWidget):
             # Re-add all overlays
             for rec in self._volumes[1:]:
                 vp.add_overlay(rec)
+
+        # Orientation labels: shown only in medical mode
+        if self._mode == self.MODE_MEDICAL:
+            self._apply_orientation_labels()
+        else:
+            for vp in self._vps:
+                vp.clear_orientation_labels()
 
         if self._mode == self.MODE_AFFINE:
             self._vps[0]._slider.setValue(self._target[1])
@@ -1796,6 +1899,50 @@ class NiftiViewer(QWidget):
             self._vps[2]._slider.setValue(int(target_med[2]))
 
     # ── Crosshair sync ────────────────────────────────────────────────────
+
+    def _apply_orientation_labels(self) -> None:
+        """
+        Apply anatomical edge labels to the three medical-mode viewports.
+
+        In neurological convention (neurogical=False):
+          Screen-right = +RAS-X = patient Right → R on screen-right, L on screen-left
+
+        In neurogical convention (neurogical=True):
+          Camera is placed on the opposite side, so screen-right = -RAS-X = patient Left
+          → L and R labels swap
+
+        Axial    (looking down +Z):
+          right axis on screen = ±RAS-X,  up axis = +RAS-Y (Posterior at top)
+          left/right = R or L,  top = P,  bottom = A
+
+        Coronal  (looking along +Y, from anterior):
+          right axis = ±RAS-X,  up axis = +RAS-Z (Superior at top)
+          left/right = R or L,  top = S,  bottom = I
+
+        Sagittal (looking along +X, from patient right):
+          right axis = -RAS-Y (pg.right = [0,-1,0], so screen-right = Posterior)
+          up axis = +RAS-Z
+          left = A (anterior),  right = P (posterior),  top = S,  bottom = I
+          The sagittal left/right do NOT flip with neurogical (scrolling axis changes
+          but the A/P assignment remains the same because right=−Y is independent of L/R)
+        """
+        if self._neurogical:
+            # Screen-right = patient Left (camera flipped)
+            ax_left, ax_right = "L", "R"
+            co_left, co_right = "L", "R"
+        else:
+            ax_left, ax_right = "R", "L"
+            co_left, co_right = "R", "L"
+
+        label_sets = [
+            # (left,     right,     top,  bottom)
+            (ax_left,  ax_right,  "P",  "A"),   # Axial
+            (co_left,  co_right,  "S",  "I"),   # Coronal
+            ("A",      "P",       "S",  "I"),   # Sagittal
+        ]
+
+        for vp, (lft, rgt, top, bot) in zip(self._vps, label_sets):
+            vp.set_orientation_labels(lft, rgt, top, bot)
 
     def _update_crosshairs(self) -> None:
         """Compute the crosshair world point and draw it in all viewports."""
@@ -1859,6 +2006,8 @@ class NiftiViewerWindow(QWidget):
 
     """
 
+    closed = Signal()  # custom signal emitted on close
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"NiftiViewerWindow {{ background:{BG_DARK}; }}")
@@ -1902,10 +2051,10 @@ class NiftiViewerWindow(QWidget):
 
         conv_box = QGroupBox("Convention")
         cl = QHBoxLayout(conv_box); cl.setContentsMargins(6,2,6,2)
-        self._cb_radio = QCheckBox("Radiological (flip L↔R)")
+        self._cb_radio = QCheckBox("Neurological (flip L↔R)")
         self._cb_radio.setEnabled(False)
         self._cb_radio.stateChanged.connect(
-            lambda s: self.viewer.set_radiological(bool(s)))
+            lambda s: self.viewer.set_neurological(bool(s)))
         cl.addWidget(self._cb_radio)
         tb_lay.addWidget(conv_box)
 
@@ -1990,6 +2139,10 @@ class NiftiViewerWindow(QWidget):
             self.viewer.grab_screenshot(path)
         except Exception as exc:
             raise
+
+    def closeEvent(self, event):
+        self.closed.emit()
+        super().closeEvent(event)  # let the default close logic run
 
 
 # ── Entry point ────────────────────────────────────────────────────────────

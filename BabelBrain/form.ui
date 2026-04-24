@@ -484,6 +484,25 @@ mask</string>
     <string>Advanced Options</string>
    </property>
   </widget>
+  <widget class="QPushButton" name="vtkVisualizationqPushButton">
+   <property name="geometry">
+    <rect>
+     <x>1059</x>
+     <y>16</y>
+     <width>123</width>
+     <height>33</height>
+    </rect>
+   </property>
+   <property name="autoFillBackground">
+    <bool>false</bool>
+   </property>
+   <property name="styleSheet">
+    <string notr="true"/>
+   </property>
+   <property name="text">
+    <string>VTK visualization</string>
+   </property>
+  </widget>
  </widget>
  <tabstops>
   <tabstop>USMaskkHzDropDown</tabstop>
