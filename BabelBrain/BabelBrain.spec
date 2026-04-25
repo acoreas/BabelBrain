@@ -109,7 +109,10 @@ if 'Darwin' in platform.system(): #for Mac
     tmp_ret = collect_all('itk')
     hiddenimports+=tmp_ret[2]
 
-    hiddenimports+=['vtkmodules','vtkmodules.all','vtkmodules.qt.QVTKRenderWindowInteractor','vtkmodules.util','vtkmodules.util.numpy_support','vtkmodules.numpy_interface', 'vtkmodules.numpy_interface.dataset_adapter']
+    tmp_ret = collect_all('vtk')
+    hiddenimports+=tmp_ret[2]
+    tmp_ret = collect_all('vtkmodules')
+    hiddenimports+=tmp_ret[2]
 
     itk_datas = collect_data_files('itk', include_py_files=True)
     datas+= [x for x in itk_datas if '__pycache__' not in x[0]]
