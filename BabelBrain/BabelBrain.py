@@ -1200,6 +1200,11 @@ class BabelBrain(QWidget):
         self._NiftiSkull=NiftiSkull
         self._NiftiWater=NiftiWater
         self._UpdateVTKAcResults()
+
+    def UpdateNiftiTemperatureResults(self,NiftiIntensity,NiftiTemperature):
+        self._NiftiIntensity=NiftiIntensity
+        self._NiftiTemperature=NiftiTemperature
+        self._UpdateVTKThermal()
     
     def _UpdateVTKAcResults(self):
         if not hasattr(self,'_vtk_visualization'):
@@ -1222,7 +1227,24 @@ class BabelBrain(QWidget):
         self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
 
     def _UpdateVTKThermal(self):
-        pass
+        if not hasattr(self,'_vtk_visualization'):
+            return
+        # We remove previous entries if already available
+        for id in ['Intensity','Temperature']:
+            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+                if row._id == id:
+                    self._vtk_visualization.viewer._on_remove_requested(n)
+                    break
+        self._vtk_visualization.viewer.add_overlay(self._NiftiIntensity,'Intensity',id='Intensity')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.0')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer.add_overlay(self._NiftiTemperature,'Temperature',id='Temperature')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('37.0')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
 
     @Slot()
     def _closingVtkVisualization(self):

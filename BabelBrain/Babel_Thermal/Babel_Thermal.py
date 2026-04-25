@@ -114,9 +114,9 @@ class Babel_Thermal(QWidget):
         self.Widget.ExportMaps.clicked.connect(self.ExportMaps)
 
         self.Widget.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateSelCombination)
-        self.Widget.IsppaSpinBox.valueChanged.connect(self.UpdateThermalResults)
+        self.Widget.IsppaSpinBox.valueChanged.connect(self._showMatplotlibVisualization)
         self.Widget.IsppaWaterSpinBox.valueChanged.connect(self.UpdateIsppaWater)
-        self.Widget.IsppaScrollBar.valueChanged.connect(self.UpdateThermalResults)
+        self.Widget.IsppaScrollBar.valueChanged.connect(self._showMatplotlibVisualization)
         self.Widget.HideMarkscheckBox.stateChanged.connect(self.HideMarkChange)
         self.Widget.IsppaScrollBar.setEnabled(False)
         self.Widget.SelCombinationDropDown.setEnabled(False)
@@ -291,22 +291,21 @@ class Babel_Thermal(QWidget):
 
     @Slot()
     def HideMarkChange(self,val):
-        self.UpdateThermalResults()
+        self._showMatplotlibVisualization()
 
     @Slot()
     def UpdateSelCombination(self):
-        self.UpdateThermalResults()
+        self._showMatplotlibVisualization()
         
     @Slot()
     def UpdateDisplay(self,val):
-        self.UpdateThermalResults()
+        self._showMatplotlibVisualization()
 
     @Slot()
     def UpdateIsppaWater(self,val):
-        self.UpdateThermalResults(bIsppaBrainToWater=False)
+        self._showMatplotlibVisualization(bIsppaBrainToWater=False)
 
-    @Slot()
-    def UpdateThermalResults(self,bUpdatePlot=True,OverWriteIsppa=None,bIsppaBrainToWater=True):
+    def _showMatplotlibVisualization(self,bUpdatePlot=True,OverWriteIsppa=None,bIsppaBrainToWater=True):
         if self.bDisableUpdate:
             return
         self._MainApp.Widget.tabWidget.setEnabled(True)
@@ -524,18 +523,19 @@ class Babel_Thermal(QWidget):
             self._ZZ=ZZ
             
         if bUpdatePlot:
+            Intensity=DataThermal['p_map']**2/2/DensityMap/SoSMap/1e4*IsppaRatio
+            Temperature=(DataThermal['TempEndFUS']-BaselineTemperature)*IsppaRatio+BaselineTemperature
+
+            if 'ZIntoSkinPixels' in DataThermal:
+                Intensity[:,:,DataThermal['ZIntoSkinPixels']]=0
+            else:
+                Intensity[:,:,0]=0
            
             if not hasattr(self,'_prevDisplay'):
                 self._prevDisplay = -1 #we set the initial plotting
-            
-            DensityMap=DataThermal['MaterialList']['Density'][DataThermal['MaterialMap'][:,SelY,:]]
-            SoSMap=    DataThermal['MaterialList']['SoS'][DataThermal['MaterialMap'][:,SelY,:]]
-            IntensityMap=(DataThermal['p_map'][:,SelY,:]**2/2/DensityMap/SoSMap/1e4*IsppaRatio).T
-            if 'ZIntoSkinPixels' in DataThermal:
-                IntensityMap[DataThermal['ZIntoSkinPixels'],:]=0
-            else:
-                IntensityMap[0,:]=0
-            Tmap=(DataThermal['TempEndFUS'][:,SelY,:]-BaselineTemperature)*IsppaRatio+BaselineTemperature
+            IntensityMap=Intensity[:,SelY,:].T.copy()
+            Tmap=Temperature[:,SelY,:]
+
 
             crlims=[0,1,2]
 
@@ -677,6 +677,14 @@ class Babel_Thermal(QWidget):
                 self.Widget.SliceLabel.setText("Y pos = %3.2f mm" %(yf[self.Widget.IsppaScrollBar.value()]))
             self._prevDisplay=WhatDisplay
 
+            NiftiIntensity=nibabel.Nifti1Image(np.flip(Intensity,axis=2),affine=self._MainApp._NiftiSkull.affine)
+            NiftiTemperature=nibabel.Nifti1Image(np.flip(Temperature,axis=2),affine=self._MainApp._NiftiSkull.affine)
+            self._MainApp.UpdateNiftiTemperatureResults(NiftiIntensity,NiftiTemperature)
+
+    @Slot()
+    def UpdateThermalResults(self):
+        self._showMatplotlibVisualization()
+
     @Slot()
     def LocateMTB(self):
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
@@ -727,7 +735,7 @@ class Babel_Thermal(QWidget):
             DataToExport={}
             DataToExport['Isppa']=np.arange(0.5,self.Widget.IsppaSpinBox.maximum()+0.5,0.5)
             for v in DataToExport['Isppa']:
-                self.UpdateThermalResults(bUpdatePlot=False,OverWriteIsppa=v)
+                self._showMatplotlibVisualization(bUpdatePlot=False,OverWriteIsppa=v)
                 collection = ['Isppa target']
                 source = [0,1]
                 if self._bMultiPoint:
@@ -766,7 +774,7 @@ class Babel_Thermal(QWidget):
         if currentCombination !=self.Widget.SelCombinationDropDown.currentIndex():
             self.Widget.SelCombinationDropDown.setCurrentIndex(currentCombination) #this will refresh
         else:
-            self.UpdateThermalResults(bUpdatePlot=True,OverWriteIsppa=currentIsppa)
+            self._showMatplotlibVisualization(bUpdatePlot=True,OverWriteIsppa=currentIsppa)
         
     @Slot()
     def ExportMaps(self):

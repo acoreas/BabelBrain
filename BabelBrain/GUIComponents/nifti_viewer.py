@@ -76,6 +76,7 @@ ACCENT    = "#00c8ff"
 COLORS    = ["#ff6b6b", "#6bffb8", "#ffda6b"]
 TEXT      = "#d4d4d8"
 TEXT_DIM  = "#71717a"
+TEXT_LBL  = "#ffda6b"
 
 # Per-volume accent colours for the layer panel rows
 VOL_COLORS = ["#ffffff", "#ff9f43", "#48dbfb", "#ff6b81",
@@ -1089,7 +1090,7 @@ class ColourBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         self._paint_into(painter, self.width(), self.height(),
                          bg_color=QColor(BG_DARK),
-                         label_color=QColor(TEXT_DIM),
+                         label_color=QColor(TEXT_LBL),
                          tick_color=QColor("#888899"),
                          border_color=QColor("#444455"))
         painter.end()
