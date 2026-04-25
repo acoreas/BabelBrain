@@ -150,7 +150,10 @@ class REMOPD(BabelBasePhaseArray):
                 self.Widget.YSteeringSpinBox.setValue(YSteering*1e3)
                 self.Widget.ZSteeringSpinBox.setValue(ZSteering*1e3)
                 self.Widget.ZRotationSpinBox.setValue(RotationZ)
-                self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
+                try:
+                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
+                except:
+                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'].astype(int))
                 self.Widget.MaxDepthSpinBox.setValue(Skull['zLengthBeyonFocalPoint']*1e3)
                 TxSet = Skull['TxSet']
                 if type(TxSet) is bytes:

@@ -2164,7 +2164,9 @@ def main():
     args = sys.argv[1:]
     if args:
         try:
-            win.viewer.load_base(args[0])
+            mask_array = nib.load(args[0]).get_fdata()
+            focal_voxel = (np.array(mask_array.shape)/2).astype(int)
+            win.viewer.load_base(args[0],focal_voxel,'base')
             win._btn_overlay.setEnabled(True)
             win._btn_screenshot.setEnabled(True)
             for path in args[1:]:

@@ -1159,6 +1159,9 @@ class BabelBrain(QWidget):
             self._vtk_visualization.setWindowTitle("VTK NIfTI Viewer — Multi-Volume")
             self._vtk_visualization.closed.connect(self._closingVtkVisualization)
             self._UpdateVTKDomain()
+        else:
+            self._vtk_visualization.raise_()
+            self._vtk_visualization.activateWindow()
 
     def _UpdateVTKDomain(self):
         mask_nib=self._MaskNib 
@@ -1193,7 +1196,7 @@ class BabelBrain(QWidget):
 
         if hasattr(self,'_NiftiSkull'):
             self._UpdateVTKAcResults()
-        if hasattr(self,'_NiftiThermal'):
+        if hasattr(self,'_NiftiTemperature'):
             self._UpdateVTKThermal()
 
     def UpdateNiftiAcResults(self,NiftiSkull,NiftiWater):
@@ -1224,7 +1227,9 @@ class BabelBrain(QWidget):
         self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
         self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
         self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.setChecked(False)
+        #we select skull for default windowing
+        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
 
     def _UpdateVTKThermal(self):
         if not hasattr(self,'_vtk_visualization'):
@@ -1235,16 +1240,24 @@ class BabelBrain(QWidget):
                 if row._id == id:
                     self._vtk_visualization.viewer._on_remove_requested(n)
                     break
+        # We hide  pressure fields
+        for id in ['Water','Skull']:
+            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+                if row._id == id:
+                    row._eye_btn.setChecked(False)
+                    break
         self._vtk_visualization.viewer.add_overlay(self._NiftiIntensity,'Intensity',id='Intensity')
         self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
         self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.0')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.1')
         self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
         self._vtk_visualization.viewer.add_overlay(self._NiftiTemperature,'Temperature',id='Temperature')
         self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('37.0')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('37.05')
         self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
         self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
+
+        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
 
     @Slot()
     def _closingVtkVisualization(self):

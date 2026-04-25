@@ -168,7 +168,10 @@ class BabelBasePhaseArray(BabelBaseTx):
                 self.Widget.YSteeringSpinBox.setValue(YSteering*1e3)
                 self.Widget.ZSteeringSpinBox.setValue(ZSteering*1e3)
                 self.Widget.ZRotationSpinBox.setValue(RotationZ)
-                self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
+                try:
+                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
+                except:
+                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'].astype(int))
                 if 'DistanceConeToFocus' in Skull and hasattr(self.Widget,'DistanceConeToFocusSpinBox'):
                     self.Widget.DistanceConeToFocusSpinBox.setValue(Skull['DistanceConeToFocus']*1e3)
                 if 'zLengthBeyonFocalPoint' in Skull:
@@ -483,8 +486,13 @@ class BabelBasePhaseArray(BabelBaseTx):
             self._MainApp.hideClockDialog()
             self._MainApp.Widget.tabWidget.setEnabled(True)
         self._showMatplotlibVisualization()
-        NiftiSkull=nibabel.load(self._FullSolName[0].split('__Steer')[0]+'_FullElasticSolution_Sub_NORM.nii.gz')
-        NiftiWater=nibabel.load(self._FullSolName[0].split('__Steer')[0]+'_Water_FullElasticSolution_Sub_NORM.nii.gz')
+        if self._MultiPoint:
+            NiftiSkull=nibabel.load(self._FullSolName[0].split('__Steer')[0]+'_FullElasticSolution_Sub_NORM.nii.gz')
+            NiftiWater=nibabel.load(self._FullSolName[0].split('__Steer')[0]+'_Water_FullElasticSolution_Sub_NORM.nii.gz')
+        else:
+            NiftiSkull=nibabel.load(self._FullSolName[0].split('_DataForSim.h5')[0]+'_FullElasticSolution_Sub_NORM.nii.gz')
+            NiftiWater=nibabel.load(self._FullSolName[0].split('_DataForSim.h5')[0]+'_Water_FullElasticSolution_Sub_NORM.nii.gz')
+
         self._MainApp.UpdateNiftiAcResults(NiftiSkull,NiftiWater)
 
         

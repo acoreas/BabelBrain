@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is BabelBrain
 
-BabelBrain is a GUI application for prospective modeling of transcranial focused ultrasound (LIFU) for neuromodulation. It computes acoustic and thermal fields transmitted through the skull using GPU-accelerated FDTD simulations. The external solver is `BabelViscoFDTD` (v1.2.3+).
+BabelBrain is a GUI application for prospective modeling of transcranial focused ultrasound (LIFU) for neuromodulation. It computes acoustic and thermal fields transmitted through the skull using GPU-accelerated FDTD simulations. The external solver is `BabelViscoFDTD` (v1.2.4+).
 
 ## Environment Setup
 
