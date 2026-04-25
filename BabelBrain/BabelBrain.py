@@ -655,9 +655,6 @@ class BabelBrain(QWidget):
         self.Widget.TransparencyScrollBar.valueChanged.connect(self.UpdateTransparency)
         self.Widget.TransparencyScrollBar.setEnabled(False)
         self.Widget.HideMarkscheckBox.stateChanged.connect(self.HideMarks)
-        self.Widget.HideMarkscheckBox.setVisible(False)
-        self.Widget.TransparencyScrollBar.setVisible(False)
-        self.Widget.VisualizationcomboBox.setEnabled(False)
 
         if self.Config['TxSystem'] =='Single':
             USMaskkHzDropDown = self.Widget.USMaskkHzDropDown
@@ -1108,9 +1105,6 @@ class BabelBrain(QWidget):
         leg=axes[-1].legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
         self._figMasks.set_facecolor(self._BackgroundColorFigures)
         leg.get_frame().set_facecolor(self._BackgroundColorFigures)
-        self.Widget.HideMarkscheckBox.setVisible(True)
-        self.Widget.TransparencyScrollBar.setVisible(True)
-        self.Widget.transparencyLabel.setVisible(True)
         self.Widget.TransparencyScrollBar.setEnabled(True)
         if not self.Widget.HideMarkscheckBox.isEnabled():
             self.Widget.HideMarkscheckBox.setEnabled(True)

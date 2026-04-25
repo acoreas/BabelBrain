@@ -106,8 +106,6 @@ class BabelBaseTx(QWidget):
         #please note this one needs to be called after child class called its load_ui
         self.Widget.ShowWaterResultscheckBox.stateChanged.connect(self._showMatplotlibVisualization)
         self.Widget.HideMarkscheckBox.stateChanged.connect(self._showMatplotlibVisualization)
-        self.Widget.VisualizationcomboBox.currentIndexChanged.connect(self.UpdateVisualization)
-        self.Widget.VisualizationcomboBox.setEnabled(False)
         
 
     @Slot()
@@ -388,14 +386,6 @@ class BabelBaseTx(QWidget):
         self._slice_viewer.viewer._layer_panel._rows[3]._cutoff_edit.setText('0.25')
         self._slice_viewer.viewer._layer_panel._rows[3]._on_cutoff_changed()
         self._slice_viewer.viewer._layer_panel._rows[3]._eye_btn.toggle()
-
-    @Slot()
-    def UpdateVisualization(self,index):
-        # if self.Widget.VisualizationcomboBox.currentIndex()==0:
-        #     self._showVTKVisualization()
-        # else:
-        self._showMatplotlibVisualization()
-
     
     @Slot()
     def UpdateAcResults(self):
@@ -404,12 +394,11 @@ class BabelBaseTx(QWidget):
         '''
         self._MainApp.SetSuccesCode()
         self.Widget.CalculateMechAdj.setEnabled(True)
-        self.Widget.VisualizationcomboBox.setEnabled(True)
         if self._bRecalculated:
             self._MainApp.ThermalSim.setEnabled(True)
             self._MainApp.hideClockDialog()
 
-        self.UpdateVisualization(0)
+        self._showMatplotlibVisualization()
         NiftiSkull=nibabel.load(self._FullSolName.replace('DataForSim.h5','FullElasticSolution_Sub_NORM.nii.gz'))
         NiftiWater=nibabel.load(self._FullSolName.replace('DataForSim.h5','Water_FullElasticSolution_Sub_NORM.nii.gz'))
         self._MainApp.UpdateNiftiAcResults(NiftiSkull,NiftiWater)
