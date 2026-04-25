@@ -326,67 +326,6 @@ class BabelBaseTx(QWidget):
         self.Widget.IsppaScrollBars.update_labels(SelX, SelY)
         self._bRecalculated = False
 
-    def _showVTKVisualization(self):
-
-        mask_nib=self._MainApp._MaskNib 
-        
-        t1w_nib = self._MainApp._T1WNib
-
-        NiftiSkull=nibabel.load(self._FullSolName.replace('DataForSim.h5','FullElasticSolution_Sub_NORM.nii.gz'))
-        NiftiWater=nibabel.load(self._FullSolName.replace('DataForSim.h5','Water_FullElasticSolution_Sub_NORM.nii.gz'))
-
-        # Focal-point voxel (label == 5 in the mask)
-        mask_array = self._MainApp.FinalMaskRaw
-        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
-        self._LocFocalPoint = focal_voxel
-        self._FinalMask = mask_array
-
-        # --- tear down previous Matplotlib viewer if present ---
-        if hasattr(self,'_figAcField'):
-            children = []
-            for i in range(self._layout.count()):
-                child = self._layout.itemAt(i).widget()
-                if child:
-                    children.append(child)
-            for child in children:
-                child.deleteLater()
-            delattr(self,'_figAcField')
-            self.Widget.AcField_plot1.repaint()
-
-        # --- tear down previous viewer if present ---
-        if not hasattr(self, '_layout'):
-            self._layout = QVBoxLayout(self.Widget.AcField_plot1)
-        else:
-            while (child := self._layout.takeAt(0)) is not None:
-                w = child.widget()
-                if w is not None:
-                    w.deleteLater()
-
-        # --- create / re-create the VTK viewer ---
-        self._slice_viewer = NiftiViewerWindow()
-        self._layout.addWidget(self._slice_viewer)
-
-        self._slice_viewer.viewer.load_base(mask_nib,
-                                            focal_voxel,
-                                            'Tissue Type',
-                                            tissue_label=True)
-        self._slice_viewer._btn_overlay.setEnabled(True)
-        self._slice_viewer._btn_screenshot.setEnabled(True)
-        self._slice_viewer._btn_reset.setEnabled(True)
-        self._slice_viewer.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True)
-        self._slice_viewer.viewer._on_cmap_changed(0,"TissueLabel")
-        self._slice_viewer.viewer._layer_panel._rows[1]._opacity_slider.setValue(100)
-        self._slice_viewer.viewer.add_overlay(NiftiSkull,'Skull')
-        self._slice_viewer.viewer._layer_panel._rows[2]._opacity_slider.setValue(100)
-        self._slice_viewer.viewer._layer_panel._rows[2]._cmap_combo.setCurrentIndex(5)
-        self._slice_viewer.viewer._layer_panel._rows[2]._cutoff_edit.setText('0.25')
-        self._slice_viewer.viewer._layer_panel._rows[2]._on_cutoff_changed()
-        self._slice_viewer.viewer.add_overlay(NiftiWater,'Water')
-        self._slice_viewer.viewer._layer_panel._rows[3]._cmap_combo.setCurrentIndex(5)
-        self._slice_viewer.viewer._layer_panel._rows[3]._cutoff_edit.setText('0.25')
-        self._slice_viewer.viewer._layer_panel._rows[3]._on_cutoff_changed()
-        self._slice_viewer.viewer._layer_panel._rows[3]._eye_btn.toggle()
-    
     @Slot()
     def UpdateAcResults(self):
         '''

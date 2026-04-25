@@ -502,6 +502,11 @@ class BabelBrain(QWidget):
         super().showEvent(event)
         self.centerOnScreen()
 
+    def closeEvent(self, event):
+        if hasattr(self,'_vtk_visualization'):
+            self._vtk_visualization.close()
+        super().closeEvent(event)  # let the default close logic run
+
     def centerOnScreen(self):
         # Get the screen geometry where the window is currently shown
         screen = self.screen().geometry()
@@ -1151,6 +1156,7 @@ class BabelBrain(QWidget):
             self._vtk_visualization = NiftiViewerWindow()
             self._vtk_visualization.resize(1580, 500)
             self._vtk_visualization.show()
+            self._vtk_visualization.setWindowTitle("VTK NIfTI Viewer — Multi-Volume")
             self._vtk_visualization.closed.connect(self._closingVtkVisualization)
             self._UpdateVTKDomain()
 
