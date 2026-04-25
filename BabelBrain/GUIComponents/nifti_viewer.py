@@ -252,6 +252,7 @@ class VolumeRecord:
     visible:   bool  = True
     cmap:      str   = "Grey"         # key into CMAPS
     cutoff:    float | None = None    # values < cutoff rendered transparent
+    id:        str   = ''             # ID, used to searc/replace in case of need
 
     def __post_init__(self):
         if self.wl_window == 0.:
@@ -296,7 +297,7 @@ def numpy_to_vtk_index(data: np.ndarray, spacing: np.ndarray) -> vtk.vtkImageDat
     return img
 
 
-def load_volume_record(ni_path: object, inname='',use_percentile=False) -> tuple[VolumeRecord, tuple, tuple, str]:
+def load_volume_record(ni_path: object, inname='',use_percentile=False,id='') -> tuple[VolumeRecord, tuple, tuple, str]:
     """Load a NIfTI file and return a VolumeRecord + metadata."""
     if nib is None:
         raise ImportError("nibabel is required: pip install nibabel")
@@ -328,6 +329,7 @@ def load_volume_record(ni_path: object, inname='',use_percentile=False) -> tuple
         vtk_xform = _make_vtk_transform(affine, sp),
         lo        = lo,
         hi        = hi,
+        id        = id
     )
     zooms = img.header.get_zooms()[:3]
     code  = "".join(nib.aff2axcodes(affine))
@@ -1174,6 +1176,7 @@ class LayerRow(QWidget):
         self._vol_idx = vol_idx
         self._is_base = (vol_idx == 0)
         self._tissue_label=tissue_label
+        self._id=rec.id
         self._build_ui(rec)
 
     def set_wl_active(self, active: bool) -> None:
@@ -1570,11 +1573,11 @@ class NiftiViewer(QWidget):
         self._refresh()
         return shape, zooms, code
 
-    def add_overlay(self, ni_path: object, name='',use_percentile=False) -> tuple:
+    def add_overlay(self, ni_path: object, name='',use_percentile=False,id='') -> tuple:
         """Add an overlay volume.  Requires at least one base volume loaded."""
         if not self._volumes:
             raise RuntimeError("Load a base volume first.")
-        rec, shape, zooms, code, _ = load_volume_record(ni_path,inname=name,use_percentile=use_percentile)
+        rec, shape, zooms, code, _ = load_volume_record(ni_path,inname=name,use_percentile=use_percentile,id=id)
         self._volumes.append(rec)
         vol_idx = len(self._volumes) - 1
         self._layer_panel.add_row(vol_idx, rec)

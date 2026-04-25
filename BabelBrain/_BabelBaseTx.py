@@ -104,8 +104,8 @@ class BabelBaseTx(QWidget):
 
     def up_load_ui(self):
         #please note this one needs to be called after child class called its load_ui
-        self.Widget.ShowWaterResultscheckBox.stateChanged.connect(self.UpdateAcResults)
-        self.Widget.HideMarkscheckBox.stateChanged.connect(self.UpdateAcResults)
+        self.Widget.ShowWaterResultscheckBox.stateChanged.connect(self._showMatplotlibVisualization)
+        self.Widget.HideMarkscheckBox.stateChanged.connect(self._showMatplotlibVisualization)
         self.Widget.VisualizationcomboBox.currentIndexChanged.connect(self.UpdateVisualization)
         self.Widget.VisualizationcomboBox.setEnabled(False)
         
@@ -391,10 +391,11 @@ class BabelBaseTx(QWidget):
 
     @Slot()
     def UpdateVisualization(self,index):
-        if self.Widget.VisualizationcomboBox.currentIndex()==0:
-            self._showVTKVisualization()
-        else:
-            self._showMatplotlibVisualization()
+        # if self.Widget.VisualizationcomboBox.currentIndex()==0:
+        #     self._showVTKVisualization()
+        # else:
+        self._showMatplotlibVisualization()
+
     
     @Slot()
     def UpdateAcResults(self):
@@ -409,8 +410,10 @@ class BabelBaseTx(QWidget):
             self._MainApp.hideClockDialog()
 
         self.UpdateVisualization(0)
+        NiftiSkull=nibabel.load(self._FullSolName.replace('DataForSim.h5','FullElasticSolution_Sub_NORM.nii.gz'))
+        NiftiWater=nibabel.load(self._FullSolName.replace('DataForSim.h5','Water_FullElasticSolution_Sub_NORM.nii.gz'))
+        self._MainApp.UpdateNiftiAcResults(NiftiSkull,NiftiWater)
         
- 
     def GetExport(self):
         Export={}
         Export['DistanceSkinToTarget']=self.Widget.DistanceSkinLabel.property('UserData')
@@ -438,8 +441,7 @@ class BabelBaseTx(QWidget):
                 central_plot_index = self.Widget.SelCombinationDropDown.findText('X:0.0 Y:0.0 Z:0.0')
             else:
                 # For single focus sims
-                central_plot_index = 0
-                
+                central_plot_index = 0          
             central_focal_spot_plot = self._ISkullCol[central_plot_index]
         else:
             # For single focus txs
