@@ -1176,9 +1176,6 @@ class BabelBrain(QWidget):
                                             focal_voxel,
                                             'Tissue Type',
                                             tissue_label=True)
-        self._vtk_visualization._btn_overlay.setEnabled(True)
-        self._vtk_visualization._btn_screenshot.setEnabled(True)
-        self._vtk_visualization._btn_reset.setEnabled(True)
         self._vtk_visualization.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True,id='T1W')
         self._vtk_visualization.viewer._on_cmap_changed(0,"TissueLabel")
         self._vtk_visualization.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)

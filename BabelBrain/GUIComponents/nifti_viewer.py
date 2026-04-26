@@ -1080,7 +1080,7 @@ class ColourBar(QWidget):
         painter = QPainter(img)
         self._paint_into(painter, width, height, bg_color=QColor("white"),
                          label_color=QColor("#222222"), tick_color=QColor("#555566"),
-                         border_color=QColor("#888899"))
+                         border_color=QColor("#888899"),fontsize=16)
         painter.end()
         return img
 
@@ -1096,7 +1096,8 @@ class ColourBar(QWidget):
         painter.end()
 
     def _paint_into(self, painter, w: int, h: int,
-                    bg_color, label_color, tick_color, border_color) -> None:
+                    bg_color, label_color, tick_color, border_color,
+                    fontsize = 10) -> None:
         from PySide6.QtGui import QColor, QFont
 
         bar_x = self.PAD_L
@@ -1135,7 +1136,7 @@ class ColourBar(QWidget):
         label_x = tick_x + self.TICK_W + 2
 
         font = QFont()
-        font.setPixelSize(10)
+        font.setPixelSize(fontsize)
         painter.setFont(font)
 
         for i in range(5):
@@ -1484,6 +1485,8 @@ class NiftiViewer(QWidget):
     # Emitted after WL changes so the layer panel can update its readout
     wl_updated = Signal(int, float, float)   # (vol_idx, window, level)
 
+    notify_load_base = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._volumes:       list[VolumeRecord] = []
@@ -1572,6 +1575,7 @@ class NiftiViewer(QWidget):
         self._selected_vol = 0
         self._target=target
         self._refresh()
+        self.notify_load_base.emit()
         return shape, zooms, code
 
     def add_overlay(self, ni_path: object, name='',use_percentile=False,id='') -> tuple:
@@ -2012,7 +2016,7 @@ class NiftiViewerWindow(QWidget):
 
     closed = Signal()  # custom signal emitted on close
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, stand_alone=False):
         super().__init__(parent)
         self.setStyleSheet(f"NiftiViewerWindow {{ background:{BG_DARK}; }}")
 
@@ -2028,9 +2032,10 @@ class NiftiViewerWindow(QWidget):
         tb_lay.setContentsMargins(8, 4, 8, 4)
         tb_lay.setSpacing(6)
 
-        # self._btn_open = QPushButton("  Open NIfTI…")
-        # self._btn_open.clicked.connect(self._open_base)
-        # tb_lay.addWidget(self._btn_open)
+        if stand_alone:
+            self._btn_open = QPushButton("  Open NIfTI…")
+            self._btn_open.clicked.connect(self._open_base)
+            tb_lay.addWidget(self._btn_open)
 
         self._btn_overlay = QPushButton("  Add overlay…")
         self._btn_overlay.setEnabled(False)
@@ -2095,7 +2100,12 @@ class NiftiViewerWindow(QWidget):
         self.viewer = NiftiViewer(self)
         self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
         root.addWidget(self.viewer, 1)
+        self.viewer.notify_load_base.connect(self.loaded_base)
 
+    def loaded_base(self):
+        self._btn_overlay.setEnabled(True)
+        self._btn_screenshot.setEnabled(True)
+        self._btn_reset.setEnabled(True)
 
     # ── Helpers ────────────────────────────────────────────────────────
 
@@ -2111,7 +2121,8 @@ class NiftiViewerWindow(QWidget):
         if not path:
             return
         try:
-            self.viewer.load_base(path)
+            focal_voxel = (np.array(nib.load(path).get_fdata().shape)/2).astype(int)
+            self.viewer.load_base(path,focal_voxel,os.path.basename(path))
             self._btn_overlay.setEnabled(True)
             self._btn_screenshot.setEnabled(True)
         except Exception as exc:
@@ -2124,7 +2135,7 @@ class NiftiViewerWindow(QWidget):
         if not path:
             return
         try:
-            self.viewer.add_overlay(path)
+            self.viewer.add_overlay(path,name=os.path.basename(path))
         except Exception as exc:
             raise
 
@@ -2155,7 +2166,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("NIfTI Viewer")
 
-    win = NiftiViewerWindow()
+    win = NiftiViewerWindow(stand_alone=True)
     win.setWindowTitle("NIfTI Viewer — Multi-Volume")
     win.resize(1580, 620)
     win.show()
@@ -2164,13 +2175,10 @@ def main():
     args = sys.argv[1:]
     if args:
         try:
-            mask_array = nib.load(args[0]).get_fdata()
-            focal_voxel = (np.array(mask_array.shape)/2).astype(int)
-            win.viewer.load_base(args[0],focal_voxel,'base')
-            win._btn_overlay.setEnabled(True)
-            win._btn_screenshot.setEnabled(True)
+            focal_voxel = (np.array(nib.load(args[0]).get_fdata().shape)/2).astype(int)
+            win.viewer.load_base(args[0],focal_voxel,os.path.basename(args[0]))
             for path in args[1:]:
-                win.viewer.add_overlay(path)
+                win.viewer.add_overlay(path,name=os.path.basename(path))
         except Exception as exc:
             raise
 
