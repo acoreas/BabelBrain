@@ -376,7 +376,7 @@ def RunBHTECycles(nCurrent,
                                                             MonitoringPointsMap=MonitoringPointsMap,
                                                             stableTemp=stableTemp)
 
-        gc.collect()
+        gc.collect(1)
         
         #for cooling off, we do not need to do steering, just running with no energy
         if TotalDurationStepsOff>0:
@@ -399,7 +399,7 @@ def RunBHTECycles(nCurrent,
                 TemperaturePoints=np.hstack((TemperaturePointsOn,TemperaturePointsOff))
             else:
                 TemperaturePoints=np.hstack((TemperaturePoints,TemperaturePointsOn,TemperaturePointsOff))
-            gc.collect()
+            gc.collect(1)
         else:
             FinalTemp=ResTemp
             FinalDose=ResDose
@@ -428,7 +428,7 @@ def RunBHTECycles(nCurrent,
                                                             MonitoringPointsMap=MonitoringPointsMap,
                                                             stableTemp=stableTemp)
             TemperaturePoints=np.hstack((TemperaturePoints,TemperaturePointsOff))
-            gc.collect()
+            gc.collect(1)
         if (bRunInSubProcess) and\
             ((nCurrent+1)% LimitBHTEIterationsPerProcess==0 or (nCurrent+1)==TotalIterations):
             print('Finishing sub process')
@@ -951,7 +951,7 @@ def CalculateTemperatureEffects(InputPData,
                                                       stableTemp=BaselineTemperature,
                                                       initT0=initT0,
                                                       initDose=initDose)
-    gc.collect()
+    gc.collect(1)
 
     ResTempSkin=ResTemp * SelSkin.astype(np.float32)
     ResTempBrain=ResTemp * SelBrain.astype(np.float32)
