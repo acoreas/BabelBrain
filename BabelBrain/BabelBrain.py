@@ -43,13 +43,12 @@ from PySide6.QtWidgets import (
     QWidget,
     QLabel
 )
-from linetimer import CodeTimer
 from matplotlib import pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvas, NavigationToolbar2QT
-from matplotlib.figure import Figure
 from matplotlib.pyplot import cm
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
+from matplotlib.backends.backend_qtagg import FigureCanvas, NavigationToolbar2QT
+from matplotlib.figure import Figure
 from nibabel import processing
 from superqt import QLabeledDoubleRangeSlider
 
@@ -68,6 +67,7 @@ from SelFiles.SelFiles import SelFiles,ValidThermalProfile
 
 from Options.Options import AdvancedOptions, OptionalParams
 from ClockDialog import ClockDialog
+from GUIComponents.nifti_viewer import NiftiViewerWindow
 
 
 multiprocessing.freeze_support()
@@ -475,8 +475,7 @@ class BabelBrain(QWidget):
             self.AcSim.EnableMultiPoint(profile['MultiPoint'])
             self.ThermalSim.EnableMultiPoint()
         self.InitApplication()
-        self.static_canvas=None
-
+        
         # Set default figure text color, works for both light and dark mode
         FIGTEXTCOLOR = np.array(self.palette().color(QPalette.WindowText).getRgb())/255.0
         plt.rcParams['text.color'] = FIGTEXTCOLOR
@@ -502,6 +501,11 @@ class BabelBrain(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.centerOnScreen()
+
+    def closeEvent(self, event):
+        if hasattr(self,'_vtk_visualization'):
+            self._vtk_visualization.close()
+        super().closeEvent(event)  # let the default close logic run
 
     def centerOnScreen(self):
         # Get the screen geometry where the window is currently shown
@@ -663,6 +667,7 @@ class BabelBrain(QWidget):
             USMaskkHzDropDown.lineEdit().textChanged.connect(self.StartManualMaskFrequency)
             USMaskkHzDropDown.lineEdit().editingFinished.connect(self.UpdateManualMaskFrequency)
 
+
     @Slot()
     def StartManualMaskFrequency(self,txt):
         try:
@@ -732,6 +737,9 @@ class BabelBrain(QWidget):
         stdout.outputWritten.connect(self.handleOutput)
 #        stderr = OutputWrapper(self, False)
 #        stderr.outputWritten.connect(self.handleOutput)
+
+        self.Widget.vtkVisualizationqPushButton.clicked.connect(self.OpenVTKVisualization)
+        self.Widget.vtkVisualizationqPushButton.setEnabled(False)
 
     def UpdateWindowTitle(self):
         self.setWindowTitle('BabelBrain V'+
@@ -942,45 +950,22 @@ class BabelBrain(QWidget):
                     return
         self.UpdateMask()
 
-    def UpdateMask(self,bDeleteOnly=False):
-        '''
-        Refresh mask
-        '''
-        self.hideClockDialog()
-        if self.Widget.HideMarkscheckBox.isEnabled()== False:
-            self.Widget.HideMarkscheckBox.setEnabled(True)
-        self.Widget.tabWidget.setEnabled(True)
-        self.AcSim.setEnabled(True)
-        try:
-            Data=nibabel.load(self._outnameMask)
-        except:
-            raise ValueError("BabelViscoInput file does not exist. This is most likely due to a crash related to high PPW, please explore using lower PPW")
-        FinalMask=Data.get_fdata()
-        FinalMask=np.flip(FinalMask,axis=2)
-        bSegmentedBrain= np.max(FinalMask)>5
-        self._bSegmentedBrain = bSegmentedBrain
-        T1W=nibabel.load(self._T1W_resampled_fname)
-        T1WData=T1W.get_fdata()
-        T1WData=np.flip(T1WData,axis=2)
-        self._T1WData=T1WData
-        
-        self._MaskData=Data
+    def _showMatplotlibVisualization(self,bDeleteOnly:bool):
         AirMask=None
         if self.Config['bUseCT']:
-            self._CTnib=nibabel.load(self._prefix_path+'CT.nii.gz')
-            AllBoneHU = np.load(self._prefix_path+'CT-cal.npz')['UniqueHU']
-            CTData=AllBoneHU[np.flip(self._CTnib.get_fdata(),axis=2).astype(int)]
+            CTData=np.flip(self._NiftiCT.get_fdata(),axis=2)
             if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
-                AirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz').get_fdata().astype(np.uint8)
-                AirMask=np.flip(AirMask,axis=2)
+                AirMask=np.flip(self._NiftiAirMask.get_fdata(),axis=2)
         
-        self._FinalMask=FinalMask
-        voxSize=Data.header.get_zooms()
-        x_vec=np.arange(Data.shape[0])*voxSize[0]
+        FinalMask=np.flip(self.FinalMaskRaw,axis=2)
+        T1WData=np.flip(self._T1WDataRaw,axis=2)
+        self._T1WData=T1WData
+        voxSize=self._T1WNib.header.get_zooms()
+        x_vec=np.arange(self._T1WNib.shape[0])*voxSize[0]
         x_vec-=x_vec.mean()
-        y_vec=np.arange(Data.shape[1])*voxSize[1]
+        y_vec=np.arange(self._T1WNib.shape[1])*voxSize[1]
         y_vec-=y_vec.mean()
-        z_vec=np.arange(Data.shape[2])*voxSize[2]
+        z_vec=np.arange(self._T1WNib.shape[2])*voxSize[2]
         z_vec-=z_vec.mean()
         LocFocalPoint=np.array(np.where(FinalMask==5)).flatten()
         self._LocFocalPoint=LocFocalPoint
@@ -1015,6 +1000,14 @@ class BabelBrain(QWidget):
                 AirMaps=[AirMask[:,LocFocalPoint[1],:].T,
                         AirMask[LocFocalPoint[0],:,:].T,
                         AirMask[:,:,LocFocalPoint[2]].T]
+                
+        # --- tear down previous VTK viewer if present ---
+        if hasattr(self,'_slice_viewer'):
+            while (child := self._layout.takeAt(0)) is not None:
+                w = child.widget()
+                if w is not None:
+                    w.deleteLater()
+            del self._slice_viewer
 
         if hasattr(self,'_figMasks'):
             while ((child := self._layout.takeAt(0)) != None):
@@ -1052,7 +1045,7 @@ class BabelBrain(QWidget):
                                 [LocFocalPoint[0],LocFocalPoint[1],LocFocalPoint[0]],
                                 [LocFocalPoint[2],LocFocalPoint[2],LocFocalPoint[1]]):
 
-            if bSegmentedBrain:
+            if self._bSegmentedBrain :
                 vmaxMask=8
             else:
                 vmaxMask=5
@@ -1071,7 +1064,7 @@ class BabelBrain(QWidget):
             self._markers.append(static_ax.plot(vec1[c1],vec2[c2],'+y',markersize=14)[0])
         im = self._imMasks[-1]
         if self.Config['bUseCT']:
-            if bSegmentedBrain:
+            if self._bSegmentedBrain :
                 values =[1,4,6,7,8]
                 legends  = ['scalp','brain-n.s','white m.','gray m.','CSF']
                 colors =[(0.0, 0.3, 1.0, 1.0), 
@@ -1087,7 +1080,7 @@ class BabelBrain(QWidget):
             #we use manual color asignation 
             
         else:
-            if bSegmentedBrain:
+            if self._bSegmentedBrain :
                 values =[1,2,3,4,6,7,8]
                 legends  = ['scalp','cort.','trab.','brain-n.s','white m.','gray m.','CSF']
                 colors = [(0.0, 0.3, 1.0, 1.0), 
@@ -1115,11 +1108,157 @@ class BabelBrain(QWidget):
                 
         patches = [ mpatches.Patch(color=colors[i], label=legends[i] ) for i in range(len(values)) ]
         leg=axes[-1].legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
-        self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
         self._figMasks.set_facecolor(self._BackgroundColorFigures)
         leg.get_frame().set_facecolor(self._BackgroundColorFigures)
-        self.UpdateAcousticTab()
         self.Widget.TransparencyScrollBar.setEnabled(True)
+        if not self.Widget.HideMarkscheckBox.isEnabled():
+            self.Widget.HideMarkscheckBox.setEnabled(True)
+
+    def UpdateMask(self, bDeleteOnly=False):
+        self.hideClockDialog()
+        self.Widget.tabWidget.setEnabled(True)
+        self.AcSim.setEnabled(True)
+        try:
+            Data=nibabel.load(self._outnameMask)
+        except:
+            raise ValueError("BabelViscoInput file does not exist. This is most likely due to a crash related to high PPW, please explore using lower PPW")
+        self.FinalMaskRaw=Data.get_fdata()
+        self._FinalMask = np.flip(self.FinalMaskRaw,axis=2)
+
+        self._bSegmentedBrain = np.max(self.FinalMaskRaw)>5
+
+        T1W=nibabel.load(self._T1W_resampled_fname)
+        self._T1WDataRaw=T1W.get_fdata()
+        
+        self._MaskNib=Data
+        self._T1WNib=T1W
+
+        if self.Config['bUseCT']:
+            self._NiftiCT=nibabel.load(self._prefix_path+'CT.nii.gz')
+            AllBoneHU = np.load(self._prefix_path+'CT-cal.npz')['UniqueHU']
+            CTData=AllBoneHU[self._NiftiCT.get_fdata().astype(int)]
+            self._NiftiCT=nibabel.Nifti1Image(CTData,affine=self._NiftiCT.affine,header=self._NiftiCT.header)               
+            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
+                self._NiftiAirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz')
+            
+        self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
+        self.Widget.vtkVisualizationqPushButton.setEnabled(True)
+        self._showMatplotlibVisualization(bDeleteOnly)
+        if hasattr(self,'_vtk_visualization'):
+            self._UpdateVTKDomain()
+        self.UpdateAcousticTab()
+
+
+    @Slot()
+    def OpenVTKVisualization(self):
+         # --- create / re-create the VTK viewer ---
+        if not hasattr(self,'_vtk_visualization'):
+            self._vtk_visualization = NiftiViewerWindow()
+            self._vtk_visualization.resize(1580, 500)
+            self._vtk_visualization.show()
+            self._vtk_visualization.setWindowTitle("VTK NIfTI Viewer — Multi-Volume")
+            self._vtk_visualization.closed.connect(self._closingVtkVisualization)
+            self._UpdateVTKDomain()
+        else:
+            self._vtk_visualization.raise_()
+            self._vtk_visualization.activateWindow()
+
+    def _UpdateVTKDomain(self):
+        mask_nib=self._MaskNib 
+        t1w_nib = self._T1WNib
+
+        # Focal-point voxel (label == 5 in the mask)
+        mask_array = self.FinalMaskRaw
+        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
+        self._LocFocalPoint = focal_voxel
+    
+        self._vtk_visualization.viewer.load_base(mask_nib,
+                                            focal_voxel,
+                                            'Tissue Type',
+                                            tissue_label=True)
+        self._vtk_visualization.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True,id='T1W')
+        self._vtk_visualization.viewer._on_cmap_changed(0,"TissueLabel")
+        self._vtk_visualization.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+        if self._NiftiCT:
+            self._vtk_visualization.viewer.add_overlay(self._NiftiCT,'CT',id='CT')
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        if self._NiftiAirMask:
+            self._vtk_visualization.viewer.add_overlay(self._NiftiAirMask,'Air',id='Air')
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+            self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(4)
+
+        if hasattr(self,'_NiftiSkull'):
+            self._UpdateVTKAcResults()
+        if hasattr(self,'_NiftiTemperature'):
+            self._UpdateVTKThermal()
+
+    def UpdateNiftiAcResults(self,NiftiSkull,NiftiWater):
+        self._NiftiSkull=NiftiSkull
+        self._NiftiWater=NiftiWater
+        self._UpdateVTKAcResults()
+
+    def UpdateNiftiTemperatureResults(self,NiftiIntensity,NiftiTemperature):
+        self._NiftiIntensity=NiftiIntensity
+        self._NiftiTemperature=NiftiTemperature
+        self._UpdateVTKThermal()
+    
+    def _UpdateVTKAcResults(self):
+        if not hasattr(self,'_vtk_visualization'):
+            return
+        # We remove previous entries if already available
+        for id in ['Skull','Water']:
+            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+                if row._id == id:
+                    self._vtk_visualization.viewer._on_remove_requested(n)
+                    break
+        self._vtk_visualization.viewer.add_overlay(self._NiftiSkull,'Skull',id='Skull')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer.add_overlay(self._NiftiWater,'Water',id='Water')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.setChecked(False)
+        #we select skull for default windowing
+        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
+
+    def _UpdateVTKThermal(self):
+        if not hasattr(self,'_vtk_visualization'):
+            return
+        # We remove previous entries if already available
+        for id in ['Intensity','Temperature']:
+            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+                if row._id == id:
+                    self._vtk_visualization.viewer._on_remove_requested(n)
+                    break
+        # We hide  pressure fields
+        for id in ['Water','Skull']:
+            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+                if row._id == id:
+                    row._eye_btn.setChecked(False)
+                    break
+        self._vtk_visualization.viewer.add_overlay(self._NiftiIntensity,'Intensity',id='Intensity')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.1')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer.add_overlay(self._NiftiTemperature,'Temperature',id='Temperature')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('37.05')
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
+
+        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
+
+    @Slot()
+    def _closingVtkVisualization(self):
+        delattr(self,'_vtk_visualization')
 
     @Slot()
     def HideMarks(self,v):
