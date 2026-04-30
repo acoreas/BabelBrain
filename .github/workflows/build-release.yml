@@ -63,40 +63,50 @@ jobs:
 
       - name: Prepare env file for CI (strip build hashes, channels, prefix)
         shell: python {0}
-        run: |
-          # The local env files were exported with `conda env export` and
-          # carry three things that bite in CI:
-          #   1. Exact build hashes (e.g. =py314h59d4d8c_2). Conda-forge
-          #      rotates these as packages are rebuilt, so they go stale.
-          #   2. The `defaults` channel. Since 2024 it's TOS-gated for
-          #      organisational use and behaves oddly in unattended CI.
-          #   3. A local `prefix:` line that micromamba complains about.
-          # YAML-parse + rewrite is more robust than sed (handles CRLF
-          # line endings from Windows exports without surprises).
-          import os, re, yaml, pathlib
-          src = pathlib.Path(os.environ["ENV_FILE_IN"])
-          dst = pathlib.Path(os.environ["ENV_FILE_OUT"])
-          data = yaml.safe_load(src.read_text(encoding="utf-8-sig"))
-          # 1. drop build hash from "pkg=ver=build" entries
-          deps = []
-          for d in data.get("dependencies", []):
-              if isinstance(d, str):
-                  m = re.match(r"^([^=\s]+=[^=\s]+)=[^=\s]+$", d)
-                  deps.append(m.group(1) if m else d)
-              else:
-                  deps.append(d)
-          data["dependencies"] = deps
-          # 2. keep only conda-forge in channels
-          data["channels"] = [c for c in data.get("channels", []) if c == "conda-forge"]
-          if not data["channels"]:
-              data["channels"] = ["conda-forge"]
-          # 3. drop the local prefix
-          data.pop("prefix", None)
-          dst.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-          print(dst.read_text(encoding="utf-8"))
         env:
           ENV_FILE_IN: ${{ matrix.env_file }}
           ENV_FILE_OUT: env_file_for_ci.yml
+        run: |
+          # Local env files are exported with `conda env export` and carry
+          # three things that bite in unattended CI:
+          #   1. Exact build hashes (=py314h59d4d8c_2). Conda-forge rotates
+          #      these as packages are rebuilt, so they go stale.
+          #   2. The `defaults` channel. Since 2024 it is TOS-gated for
+          #      organisational use and behaves oddly in CI runs.
+          #   3. A local `prefix:` line that micromamba warns about.
+          # We rewrite line-by-line so we don't need PyYAML (not on the
+          # system Python of GHA Windows runners). Reading with utf-8-sig
+          # handles BOM / CRLF cleanly.
+          import os, re
+          src = os.environ["ENV_FILE_IN"]
+          dst = os.environ["ENV_FILE_OUT"]
+
+          out, in_channels = [], False
+          # Matches a "  - pkg=ver=build" line (single =, not pip's ==)
+          dep_with_build = re.compile(r"^(\s*-\s+[^=\s]+=[^=\s]+)=[^=\s]+\s*$")
+          defaults_line  = re.compile(r"^\s*-\s*defaults\s*$")
+
+          with open(src, "r", encoding="utf-8-sig") as f:
+              for raw in f:
+                  line = raw.rstrip("\r\n")
+
+                  if line.startswith("prefix:"):
+                      continue
+                  if line.startswith("channels:"):
+                      in_channels = True
+                  elif line.startswith("dependencies:"):
+                      in_channels = False
+                  if in_channels and defaults_line.match(line):
+                      continue
+
+                  m = dep_with_build.match(line)
+                  if m:
+                      line = m.group(1)
+                  out.append(line)
+
+          with open(dst, "w", encoding="utf-8") as f:
+              f.write("\n".join(out) + "\n")
+          print(open(dst, encoding="utf-8").read())
 
       - name: Set up micromamba + create env
         uses: mamba-org/setup-micromamba@v2
