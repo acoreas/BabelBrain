@@ -43,10 +43,6 @@ def collect_external_bin_binaries():
                     collected_binaries += [(path, "." + os.sep + os.path.dirname(path))]
             else:
                 raise ValueError("Only MAC, Windows, and Linux systems are supported")
-    tmp_ret = collect_all('vtk')
-    hiddenimports+=tmp_ret[2]
-    tmp_ret = collect_all('vtkmodules')
-    hiddenimports+=tmp_ret[2]
 
     print("\nExternal Bin Binaries:\n" + "\n".join(map(str, collected_binaries)))  # print list of binaries
 
@@ -233,6 +229,8 @@ if "Darwin" in platform.system():  # For MAC systems
         "vtkmodules.numpy_interface",
         "vtkmodules.numpy_interface.dataset_adapter",
     ]
+
+    binaries += collect_external_bin_binaries()
 
     # PyDICOM
     tmp_ret2 = collect_all("pydicom")

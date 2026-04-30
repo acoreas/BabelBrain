@@ -178,13 +178,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install create-dmg
 
-      - name: Build DMG with drag-to-Applications layout (macOS)
-        if: runner.os == 'macOS'
+      - name: Build DMG containing the signed PKG installer (macOS)
+        if: runner.os == 'macOS' && env.SIGNING_AVAILABLE == 'true'
         run: |
           mkdir -p artifacts
           STAGE="$RUNNER_TEMP/dmg_stage"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
-          /usr/bin/ditto "BabelBrain/dist/BabelBrain.app" "$STAGE/BabelBrain.app"
+          # The PKG is the install entry point; users double-click it.
+          cp "artifacts/${{ matrix.artifact_name }}.pkg" "$STAGE/BabelBrain.pkg"
+          # Extras alongside the installer for reference/manual copy.
           mkdir -p "$STAGE/Profiles" "$STAGE/PlanningModels"
           cp -R Profiles/* "$STAGE/Profiles/" 2>/dev/null || true
           cp -R PlanningModels/* "$STAGE/PlanningModels/" 2>/dev/null || true
@@ -193,14 +195,9 @@ jobs:
           create-dmg \
             --volname "BabelBrain Installer" \
             --window-pos 200 120 \
-            --window-size 800 500 \
+            --window-size 800 400 \
             --icon-size 100 \
-            --icon "BabelBrain.app" 150 200 \
-            --hide-extension "BabelBrain.app" \
-            --app-drop-link 650 200 \
-            --icon "Profiles" 175 380 \
-            --icon "PlanningModels" 400 380 \
-            --icon "LICENSE" 625 380 \
+            --icon "BabelBrain.pkg" 200 190 \
             "$DMG" \
             "$STAGE/"
 
@@ -234,9 +231,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
+          # PKG is bundled inside the DMG, no need to upload separately.
           path: |
             artifacts/*.zip
-            artifacts/*.pkg
             artifacts/*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -263,5 +260,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist-artifacts/**/*.zip
-            dist-artifacts/**/*.pkg
             dist-artifacts/**/*.dmg
