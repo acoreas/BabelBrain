@@ -234,21 +234,52 @@ jobs:
             --wait
           xcrun stapler staple "$DMG"
 
-      - name: Package Windows build (zip)
+      # --------------------------------------------------------------------
+      # Windows: build MSI installer via msicreator (uses WiX Toolset v3.11)
+      # createmsi.py from the fork hardcodes the WiX 3.11 install path, so we
+      # install that exact version even though the runner ships with 3.14.
+      # --------------------------------------------------------------------
+      - name: Install WiX Toolset 3.11 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install wixtoolset --version=3.11.2 -y --no-progress
+
+      - name: Clone msicreator fork (Windows)
         if: runner.os == 'Windows'
         run: |
-          mkdir -p artifacts
-          # PyInstaller produces BabelBrain/dist/BabelBrain/ (onedir mode)
-          7z a -tzip "artifacts/${{ matrix.artifact_name }}.zip" \
-            "./BabelBrain/dist/BabelBrain/*"
+          git clone --depth 1 --branch master \
+            https://github.com/ProteusMRIgHIFU/msicreator.git \
+            "$RUNNER_TEMP/msicreator"
+
+      - name: Flatten dist/ for MSI staging (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # PyInstaller writes everything into BabelBrain/dist/BabelBrain/.
+          # BabelBrain-msi.json's "staged_dir": "dist" expects the files one
+          # level up, directly under BabelBrain/dist/.
+          cd BabelBrain/dist/BabelBrain
+          shopt -s dotglob nullglob
+          mv -- * ..
+          cd ..
+          rmdir BabelBrain
+
+      - name: Build MSI installer (Windows)
+        if: runner.os == 'Windows'
+        working-directory: BabelBrain
+        run: |
+          mkdir -p ../artifacts
+          python "$RUNNER_TEMP/msicreator/createmsi.py" BabelBrain-msi.json
+          # createmsi writes the MSI in the cwd; move it to the artifact dir
+          # under the matrix-derived name so the upload step picks it up.
+          mv -- *.msi "../artifacts/${{ matrix.artifact_name }}.msi"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          # PKG is bundled inside the DMG, no need to upload separately.
+          # PKG is bundled inside the DMG; Windows ships an MSI installer.
           path: |
-            artifacts/*.zip
+            artifacts/*.msi
             artifacts/*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -274,5 +305,5 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           files: |
-            dist-artifacts/**/*.zip
+            dist-artifacts/**/*.msi
             dist-artifacts/**/*.dmg
