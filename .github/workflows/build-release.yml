@@ -253,7 +253,11 @@ jobs:
       - name: Install WiX Toolset 3.11 (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install wixtoolset --version=3.11.2 -y --no-progress
+        # The runner image ships WiX 3.14, but createmsi.py hardcodes the
+        # 3.11 install path. --allow-downgrade lets choco replace 3.14 with
+        # 3.11 (the runner VM is throwaway, so downgrading a system
+        # component is harmless here).
+        run: choco install wixtoolset --version=3.11.2 -y --no-progress --allow-downgrade
 
       - name: Clone msicreator fork (Windows)
         if: runner.os == 'Windows'
