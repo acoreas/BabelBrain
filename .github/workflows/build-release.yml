@@ -31,7 +31,13 @@ jobs:
           #   env_file: environment_mac_arm64-314.yml
           #   artifact_name: BabelBrain-macOS-arm64
           - label: macOS-x64
-            os: macos-13
+            # GitHub retired macos-13 (Intel) runners, so this build now
+            # cross-compiles on arm64 hardware via Rosetta 2. CONDA_SUBDIR=osx-64
+            # forces conda to fetch x86_64 packages; the resulting .app is
+            # x86_64 and runs natively on Intel Macs (and via Rosetta on Apple
+            # Silicon for users who want it).
+            os: macos-latest
+            conda_subdir: osx-64
             env_file: environment_mac_x64-314.yml
             artifact_name: BabelBrain-macOS-x64
           # - label: Windows-x64
@@ -50,8 +56,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Rosetta 2 (cross-arch x86_64 build on Apple Silicon)
+        if: runner.os == 'macOS' && matrix.conda_subdir == 'osx-64'
+        run: |
+          softwareupdate --install-rosetta --agree-to-license
+
       - name: Set up micromamba + create env
         uses: mamba-org/setup-micromamba@v2
+        env:
+          # When set (e.g. matrix.conda_subdir = osx-64), forces the env to
+          # be created from x86_64 packages even on an arm64 host.
+          CONDA_SUBDIR: ${{ matrix.conda_subdir }}
         with:
           environment-file: ${{ matrix.env_file }}
           environment-name: babelbrain
