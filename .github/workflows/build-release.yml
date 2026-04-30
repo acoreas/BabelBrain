@@ -61,6 +61,18 @@ jobs:
         run: |
           softwareupdate --install-rosetta --agree-to-license
 
+      - name: Strip conda build hashes from env file
+        run: |
+          # Local env files were exported with `conda env export` and pin
+          # exact build hashes (e.g. =py314h59d4d8c_2). Conda-forge rotates
+          # these as packages are rebuilt; once gone, the solver errors with
+          # "does not exist (perhaps a typo or a missing channel)". Strip
+          # the third =hash segment so the env solves on version only.
+          sed -E 's/^([[:space:]]*-[[:space:]]+[^=#[:space:]]+=[^=#[:space:]]+)=[^=#[:space:]]+([[:space:]]*)$/\1\2/' \
+            "${{ matrix.env_file }}" > env_file_for_ci.yml
+          echo "Diff (original vs. stripped):"
+          diff "${{ matrix.env_file }}" env_file_for_ci.yml | head -40 || true
+
       - name: Set up micromamba + create env
         uses: mamba-org/setup-micromamba@v2
         env:
@@ -68,7 +80,7 @@ jobs:
           # be created from x86_64 packages even on an arm64 host.
           CONDA_SUBDIR: ${{ matrix.conda_subdir }}
         with:
-          environment-file: ${{ matrix.env_file }}
+          environment-file: env_file_for_ci.yml
           environment-name: babelbrain
           init-shell: bash
           cache-environment: true
