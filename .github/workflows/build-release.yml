@@ -42,7 +42,7 @@ jobs:
           #   artifact_name: BabelBrain-macOS-x64
           - label: Windows-x64
             os: windows-latest
-            env_file: environment_win-314.yml
+            env_file: environment_win-314-NoHash.yml
             artifact_name: BabelBrain-Windows-x64
 
     defaults:
@@ -61,53 +61,6 @@ jobs:
         run: |
           softwareupdate --install-rosetta --agree-to-license
 
-      - name: Prepare env file for CI (strip build hashes, channels, prefix)
-        shell: python {0}
-        env:
-          ENV_FILE_IN: ${{ matrix.env_file }}
-          ENV_FILE_OUT: env_file_for_ci.yml
-        run: |
-          # Local env files are exported with `conda env export` and carry
-          # three things that bite in unattended CI:
-          #   1. Exact build hashes (=py314h59d4d8c_2). Conda-forge rotates
-          #      these as packages are rebuilt, so they go stale.
-          #   2. The `defaults` channel. Since 2024 it is TOS-gated for
-          #      organisational use and behaves oddly in CI runs.
-          #   3. A local `prefix:` line that micromamba warns about.
-          # We rewrite line-by-line so we don't need PyYAML (not on the
-          # system Python of GHA Windows runners). Reading with utf-8-sig
-          # handles BOM / CRLF cleanly.
-          import os, re
-          src = os.environ["ENV_FILE_IN"]
-          dst = os.environ["ENV_FILE_OUT"]
-
-          out, in_channels = [], False
-          # Matches a "  - pkg=ver=build" line (single =, not pip's ==)
-          dep_with_build = re.compile(r"^(\s*-\s+[^=\s]+=[^=\s]+)=[^=\s]+\s*$")
-          defaults_line  = re.compile(r"^\s*-\s*defaults\s*$")
-
-          with open(src, "r", encoding="utf-8-sig") as f:
-              for raw in f:
-                  line = raw.rstrip("\r\n")
-
-                  if line.startswith("prefix:"):
-                      continue
-                  if line.startswith("channels:"):
-                      in_channels = True
-                  elif line.startswith("dependencies:"):
-                      in_channels = False
-                  if in_channels and defaults_line.match(line):
-                      continue
-
-                  m = dep_with_build.match(line)
-                  if m:
-                      line = m.group(1)
-                  out.append(line)
-
-          with open(dst, "w", encoding="utf-8") as f:
-              f.write("\n".join(out) + "\n")
-          print(open(dst, encoding="utf-8").read())
-
       - name: Set up micromamba + create env
         uses: mamba-org/setup-micromamba@v2
         env:
@@ -115,7 +68,7 @@ jobs:
           # be created from x86_64 packages even on an arm64 host.
           CONDA_SUBDIR: ${{ matrix.conda_subdir }}
         with:
-          environment-file: env_file_for_ci.yml
+          environment-file: ${{ matrix.env_file }}
           environment-name: babelbrain
           init-shell: bash
           cache-environment: true
