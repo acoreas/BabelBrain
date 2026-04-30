@@ -279,11 +279,15 @@ def DoIntersect(Mesh1,Mesh2,bForceUseBlender=False):
             mesh.merge_vertices()
             mesh.fix_normals()
             trimesh.repair.fill_holes(mesh) 
+    
     # Perform intersection
-    if not bForceUseBlender:
-        Mesh1_intersect =trimesh.boolean.intersection((Mesh1,Mesh2),engine='manifold')
-    else:
-        Mesh1_intersect =trimesh.boolean.intersection((Mesh1,Mesh2),engine='blender')
+    engine = 'blender' if bForceUseBlender else 'manifold'
+    print(f"Performing intersection with {engine}")
+    try:
+        Mesh1_intersect = trimesh.boolean.intersection((Mesh1, Mesh2), engine=engine)
+    except:
+        print("Intersection failed, trying again without check_volume")
+        Mesh1_intersect = trimesh.boolean.intersection((Mesh1, Mesh2), engine=engine, check_volume=False)
 
     # Check intersection is valid
     if Mesh1_intersect.is_empty:
@@ -334,6 +338,7 @@ def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
         result = subprocess.run(
                 [path_script,
                 SimbNINBSRoot,
+                scriptbase,
                 reference,
                 mesh,
                 finalname], capture_output=True, text=True,shell=True,
