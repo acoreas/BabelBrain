@@ -61,12 +61,17 @@ jobs:
         run: |
           softwareupdate --install-rosetta --agree-to-license
 
+      - name: Configure CONDA_SUBDIR for cross-arch builds
+        # Only set CONDA_SUBDIR when actually doing a cross-arch build.
+        # Setting it to an empty string (e.g. via env: CONDA_SUBDIR: ${{ matrix.conda_subdir }}
+        # when the matrix value is unset) makes libmamba treat it as
+        # "no platform subdir" — it then only fetches noarch/ and silently
+        # fails to find any platform-specific package (python, numpy, ...).
+        if: matrix.conda_subdir != ''
+        run: echo "CONDA_SUBDIR=${{ matrix.conda_subdir }}" >> "$GITHUB_ENV"
+
       - name: Set up micromamba + create env
         uses: mamba-org/setup-micromamba@v2
-        env:
-          # When set (e.g. matrix.conda_subdir = osx-64), forces the env to
-          # be created from x86_64 packages even on an arm64 host.
-          CONDA_SUBDIR: ${{ matrix.conda_subdir }}
         with:
           environment-file: ${{ matrix.env_file }}
           environment-name: babelbrain
