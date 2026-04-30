@@ -73,6 +73,12 @@ jobs:
           init-shell: bash
           cache-environment: true
           cache-downloads: true
+          # Skip the post-job cleanup step. On Windows the action's bash
+          # auto-activation line is never written to .bash_profile, so the
+          # cleanup fails with "Could not find micromamba activate babelbrain"
+          # and marks the whole job failed. The runner VM is ephemeral so
+          # there's no real cleanup needed anyway.
+          post-cleanup: none
 
       - name: Show toolchain
         run: |
