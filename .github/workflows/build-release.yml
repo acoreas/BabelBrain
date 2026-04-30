@@ -250,14 +250,28 @@ jobs:
       # createmsi.py from the fork hardcodes the WiX 3.11 install path, so we
       # install that exact version even though the runner ships with 3.14.
       # --------------------------------------------------------------------
-      - name: Install WiX Toolset 3.11 (Windows)
+      - name: Make WiX 3.14 visible at the v3.11 path createmsi expects (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # The runner image ships WiX 3.14, but createmsi.py hardcodes the
-        # 3.11 install path. --allow-downgrade lets choco replace 3.14 with
-        # 3.11 (the runner VM is throwaway, so downgrading a system
-        # component is harmless here).
-        run: choco install wixtoolset --version=3.11.2 -y --no-progress --allow-downgrade
+        # createmsi.py hardcodes "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+        # The runner already has WiX 3.14 installed, and 3.x's XML schema is
+        # unchanged between 3.11 and 3.14 — same candle/light tools, same
+        # output. We just need *something* at the v3.11 path. A directory
+        # junction is instant and avoids choco's --allow-downgrade quirks.
+        run: |
+          $src = "C:\Program Files (x86)\WiX Toolset v3.14"
+          $dst = "C:\Program Files (x86)\WiX Toolset v3.11"
+          if (-not (Test-Path "$src\bin\candle.exe")) {
+            Write-Host "Diagnostic — listing WiX-related directories:"
+            Get-ChildItem "C:\Program Files\" -Filter "WiX*" -EA SilentlyContinue | Format-Table
+            Get-ChildItem "C:\Program Files (x86)\" -Filter "WiX*" -EA SilentlyContinue | Format-Table
+            throw "Expected candle.exe at $src\bin — runner image may have changed."
+          }
+          if (-not (Test-Path $dst)) {
+            New-Item -ItemType Junction -Path $dst -Target $src | Out-Null
+          }
+          Write-Host "v3.11 junction now points to:"
+          Get-Item $dst | Select-Object FullName, Target | Format-List
 
       - name: Clone msicreator fork (Windows)
         if: runner.os == 'Windows'
