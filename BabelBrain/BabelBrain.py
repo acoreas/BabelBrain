@@ -497,6 +497,8 @@ class BabelBrain(QWidget):
         self._TrackingTime={'Calculation time domain':0.0,
                             'Calculation time ultrasound':0.0,
                             'Calculation time thermal':0.0}
+        self._NiftiCT = None
+        self._NiftiAirMask = None
         
     def showEvent(self, event):
         super().showEvent(event)
