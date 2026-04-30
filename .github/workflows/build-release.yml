@@ -6,7 +6,8 @@ name: Build BabelBrain (cross-platform)
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'        # production releases (publishes a GitHub Release)
+      - 'test-*'    # iteration/test builds (artifacts only, no Release)
   workflow_dispatch:
     inputs:
       publish_release:
