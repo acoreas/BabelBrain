@@ -1487,6 +1487,9 @@ class NiftiViewer(QWidget):
 
     notify_load_base = Signal()
 
+    # Emitted whenever the crosshair moves to a new RAS position
+    ras_changed = Signal(float, float, float)   # (x, y, z)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._volumes:       list[VolumeRecord] = []
@@ -1655,6 +1658,71 @@ class NiftiViewer(QWidget):
         if self._selected_vol < len(self._volumes):
             self._colorbar.update_bar(self._volumes[self._selected_vol])
 
+
+    def navigate_to_ras(self, x: float, y: float, z: float) -> None:
+        """
+        Move all three viewports so the crosshair sits at RAS world position (x, y, z).
+
+        In AFFINE mode, the RAS point is converted to voxel indices using the
+        inverse affine of the base volume, then each slider is set to the
+        corresponding slice index.
+
+        In MEDICAL mode, the RAS point is projected onto the three canonical
+        RAS-axis grids (axial=Z, coronal=Y, sagittal=X).
+
+        Silently does nothing if no base volume is loaded or the point is outside
+        the volume bounding box.
+        """
+        if self._base_affine is None or not self._geoms:
+            return
+
+        world = np.array([x, y, z])
+
+        if self._mode == self.MODE_AFFINE:
+            # RAS world → voxel index via inverse affine
+            affine_inv = np.linalg.inv(self._base_affine)
+            vox = (affine_inv @ np.append(world, 1.))[:3]
+
+            sp, R = _decompose(self._base_affine)
+
+            # VP0: normal=dj (Slice j) → scroll along j-axis → vox[1]
+            # VP1: normal=di (Slice i) → scroll along i-axis → vox[0]
+            # VP2: normal=dk (Slice k) → scroll along k-axis → vox[2]
+            indices = [
+                int(np.clip(round(vox[1]), 0, self._geoms[0].n - 1)),
+                int(np.clip(round(vox[0]), 0, self._geoms[1].n - 1)),
+                int(np.clip(round(vox[2]), 0, self._geoms[2].n - 1)),
+            ]
+        else:
+            # RAS world → medical grid indices
+            sp, _ = _decompose(self._base_affine)
+            iso   = float(np.min(sp))
+            indices = []
+            for g in self._geoms:
+                raw = np.dot(world - self._ras_min, g.normal) / iso
+                indices.append(int(np.clip(round(raw), 0, g.n - 1)))
+
+        for vp, idx in zip(self._vps, indices):
+            vp.set_slice(idx)
+
+        self._update_crosshairs()
+
+    def get_current_ras(self) -> tuple[float, float, float]:
+        """
+        Return the RAS world coordinates of the current crosshair intersection.
+        Returns (0, 0, 0) if no base volume is loaded.
+        """
+        if not self._geoms:
+            return (0., 0., 0.)
+        pts     = [vp.world_position() for vp in self._vps]
+        normals = [g.normal for g in self._geoms]
+        A = np.vstack(normals)
+        b = np.array([np.dot(normals[i], pts[i]) for i in range(3)])
+        try:
+            w = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError:
+            w = self._geoms[0].centre.copy()
+        return (float(w[0]), float(w[1]), float(w[2]))
 
     def affine_to_medical_coords(
         self,
@@ -1944,7 +2012,7 @@ class NiftiViewer(QWidget):
 
         label_sets = [
             # (left,     right,     top,  bottom)
-            (ax_left,  ax_right,  "P",  "A"),   # Axial
+            (ax_left,  ax_right,  "A",  "P"),   # Axial
             (co_left,  co_right,  "S",  "I"),   # Coronal
             ("A",      "P",       "S",  "I"),   # Sagittal
         ]
@@ -1967,6 +2035,7 @@ class NiftiViewer(QWidget):
         if self._crosshair_visible:
             for vp in self._vps:
                 vp.set_crosshair(world_pt, self._half_len)
+        self.ras_changed.emit(float(world_pt[0]), float(world_pt[1]), float(world_pt[2]))
 
     def _on_slice_changed(self, _plane_idx: int, _slice_idx: int) -> None:
         self._update_crosshairs()
@@ -2093,6 +2162,44 @@ class NiftiViewerWindow(QWidget):
         self._btn_reset.clicked.connect(self._reset_view)
         tb_lay.addWidget(self._btn_reset)
 
+        tb_lay.addWidget(_tb_sep())
+
+        # ── RAS coordinate navigator ───────────────────────────────────
+        ras_box = QGroupBox("RAS (mm)")
+        ras_box.setToolTip(
+            "Current crosshair position in RAS world coordinates.\n"
+            "Type a value and press Enter (or click away) to navigate there.")
+        rl = QHBoxLayout(ras_box)
+        rl.setContentsMargins(6, 1, 6, 1)
+        rl.setSpacing(4)
+
+        _coord_edit_style = f"""
+            QLineEdit {{
+                background:#1a1a22; color:{ACCENT};
+                border:1px solid #444455; border-radius:3px;
+                padding:0 3px; font-size:11px; font-family:monospace;
+                min-width:52px; max-width:64px;
+            }}
+            QLineEdit:focus {{ border-color:{ACCENT}; }}
+        """
+        _lbl_style = f"color:{TEXT_DIM}; font-size:10px;"
+
+        self._ras_edits: list[QLineEdit] = []
+        for axis in ("X", "Y", "Z"):
+            lbl = QLabel(axis)
+            lbl.setStyleSheet(_lbl_style)
+            rl.addWidget(lbl)
+            edit = QLineEdit("0.0")
+            edit.setValidator(QDoubleValidator(-9999., 9999., 2))
+            edit.setStyleSheet(_coord_edit_style)
+            edit.setToolTip(f"RAS {axis} coordinate in mm")
+            edit.returnPressed.connect(self._on_ras_entered)
+            edit.editingFinished.connect(self._on_ras_entered)
+            rl.addWidget(edit)
+            self._ras_edits.append(edit)
+
+        tb_lay.addWidget(ras_box)
+
         tb_lay.addStretch(1)
         root.addWidget(tb)
 
@@ -2101,11 +2208,43 @@ class NiftiViewerWindow(QWidget):
         self.viewer.wl_updated.connect(self.viewer._layer_panel.update_wl_readout)
         root.addWidget(self.viewer, 1)
         self.viewer.notify_load_base.connect(self.loaded_base)
+        # Update the RAS boxes whenever the crosshair moves (slider scroll, etc.)
+        self.viewer.ras_changed.connect(self._on_ras_changed)
+        # Guard: editingFinished fires twice sometimes; track last-committed value
+        self._ras_committing = False
 
     def loaded_base(self):
         self._btn_overlay.setEnabled(True)
         self._btn_screenshot.setEnabled(True)
         self._btn_reset.setEnabled(True)
+
+    # ── RAS coordinate handlers ────────────────────────────────────────
+
+    def _on_ras_changed(self, x: float, y: float, z: float) -> None:
+        """Update the RAS text boxes when the crosshair moves (read-only update)."""
+        if self._ras_committing:
+            return   # avoid feedback loop while we're the ones navigating
+        for edit, val in zip(self._ras_edits, (x, y, z)):
+            edit.blockSignals(True)
+            edit.setText(f"{val:.2f}")
+            edit.blockSignals(False)
+
+    def _on_ras_entered(self) -> None:
+        """Navigate to the typed RAS coordinate when Enter is pressed or focus is lost."""
+        if self._ras_committing:
+            return
+        try:
+            vals = [float(e.text()) for e in self._ras_edits]
+        except ValueError:
+            return
+        self._ras_committing = True
+        self.viewer.navigate_to_ras(*vals)
+        # Clear the flag after a zero-delay timer so that any pending
+        # editingFinished events in the same Qt event-loop cycle are ignored,
+        # but the ras_changed signal (which fires synchronously from
+        # navigate_to_ras → _update_crosshairs) is no longer blocked.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: setattr(self, '_ras_committing', False))
 
     # ── Helpers ────────────────────────────────────────────────────────
 
