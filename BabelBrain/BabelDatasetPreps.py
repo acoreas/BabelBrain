@@ -305,7 +305,7 @@ def FixMesh(inmesh):
     return fixmesh
 
 def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
-    scriptbase=os.path.join(resource_path(),"ExternalBin/SimbNIBSMesh/")
+    scriptbase=os.path.join(resource_path(),"ExternalBin","SimbNIBSMesh")
     if sys.platform == 'linux' or _IS_MAC:
         if sys.platform == 'linux':
             shell='bash'
