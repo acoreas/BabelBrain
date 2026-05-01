@@ -263,8 +263,8 @@ elif "Windows" in platform.system():  # For windows systems
 
     # CUDA headers
     cuda_headers = []
-    # cuda_headers += [(os.path.join(cuda_include, "cuda_runtime.h"), "./Library/include")]
-    # cuda_headers += [(os.path.join(cuda_include, "cuda_fp16.h"), "./Library/include")]
+    cuda_headers += [(os.path.join(cuda_include, "cuda_runtime.h"), "./Library/include")]
+    cuda_headers += [(os.path.join(cuda_include, "cuda_fp16.h"), "./Library/include")]
 
     # Add to datas
     datas += cuda_headers
