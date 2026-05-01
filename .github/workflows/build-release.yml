@@ -246,69 +246,38 @@ jobs:
           xcrun stapler staple "$DMG"
 
       # --------------------------------------------------------------------
-      # Windows: build MSI installer via msicreator (uses WiX Toolset v3.11)
-      # createmsi.py from the fork hardcodes the WiX 3.11 install path, so we
-      # install that exact version even though the runner ships with 3.14.
+      # Windows: build the installer with Inno Setup.
+      # ISCC.exe ships pre-installed on windows-latest. The .iss script lives
+      # at BabelBrain/BabelBrain.iss and reads from BabelBrain/dist/BabelBrain/
+      # (PyInstaller's onedir output) directly — no flatten step needed.
       # --------------------------------------------------------------------
-      - name: Make WiX 3.14 visible at the v3.11 path createmsi expects (Windows)
+      - name: Build Inno Setup installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # createmsi.py hardcodes "C:\Program Files (x86)\WiX Toolset v3.11\bin"
-        # The runner already has WiX 3.14 installed, and 3.x's XML schema is
-        # unchanged between 3.11 and 3.14 — same candle/light tools, same
-        # output. We just need *something* at the v3.11 path. A directory
-        # junction is instant and avoids choco's --allow-downgrade quirks.
-        run: |
-          $src = "C:\Program Files (x86)\WiX Toolset v3.14"
-          $dst = "C:\Program Files (x86)\WiX Toolset v3.11"
-          if (-not (Test-Path "$src\bin\candle.exe")) {
-            Write-Host "Diagnostic — listing WiX-related directories:"
-            Get-ChildItem "C:\Program Files\" -Filter "WiX*" -EA SilentlyContinue | Format-Table
-            Get-ChildItem "C:\Program Files (x86)\" -Filter "WiX*" -EA SilentlyContinue | Format-Table
-            throw "Expected candle.exe at $src\bin — runner image may have changed."
-          }
-          if (-not (Test-Path $dst)) {
-            New-Item -ItemType Junction -Path $dst -Target $src | Out-Null
-          }
-          Write-Host "v3.11 junction now points to:"
-          Get-Item $dst | Select-Object FullName, Target | Format-List
-
-      - name: Clone msicreator fork (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          git clone --depth 1 --branch master \
-            https://github.com/ProteusMRIgHIFU/msicreator.git \
-            "$RUNNER_TEMP/msicreator"
-
-      - name: Flatten dist/ for MSI staging (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # PyInstaller writes everything into BabelBrain/dist/BabelBrain/.
-          # BabelBrain-msi.json's "staged_dir": "dist" expects the files one
-          # level up, directly under BabelBrain/dist/.
-          cd BabelBrain/dist/BabelBrain
-          shopt -s dotglob nullglob
-          mv -- * ..
-          cd ..
-          rmdir BabelBrain
-
-      - name: Build MSI installer (Windows)
-        if: runner.os == 'Windows'
         working-directory: BabelBrain
         run: |
-          mkdir -p ../artifacts
-          python "$RUNNER_TEMP/msicreator/createmsi.py" BabelBrain-msi.json
-          # createmsi writes the MSI in the cwd; move it to the artifact dir
-          # under the matrix-derived name so the upload step picks it up.
-          mv -- *.msi "../artifacts/${{ matrix.artifact_name }}.msi"
+          $version = (Get-Content version.txt -Raw).Trim()
+          Write-Host "Building Inno Setup installer for version $version"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Diagnostic — searching for ISCC.exe:"
+            Get-ChildItem "C:\Program Files\","C:\Program Files (x86)\" -Filter "Inno*" -EA SilentlyContinue | Format-Table
+            throw "ISCC.exe not found at $iscc — runner image may have changed."
+          }
+          & $iscc "/DAppVersion=$version" BabelBrain.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed: exit $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force -Path ..\artifacts | Out-Null
+          # OutputBaseFilename in BabelBrain.iss is "BabelBrain-Setup".
+          Move-Item "BabelBrain-Setup.exe" "..\artifacts\${{ matrix.artifact_name }}.exe"
+          Get-Item "..\artifacts\${{ matrix.artifact_name }}.exe" | Select-Object FullName, Length
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          # PKG is bundled inside the DMG; Windows ships an MSI installer.
+          # PKG is bundled inside the DMG; Windows ships an Inno Setup .exe.
           path: |
-            artifacts/*.msi
+            artifacts/*.exe
             artifacts/*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -334,5 +303,5 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           files: |
-            dist-artifacts/**/*.msi
+            dist-artifacts/**/*.exe
             dist-artifacts/**/*.dmg
