@@ -95,7 +95,8 @@ class CustomTransducer():
     def _validate_custom_tx_params(self,tx_params):
         logger.info("Validating custom transducer file")
         
-        self._validate_name(tx_params)  # sets: self.name                                                                     # sets: self.PlanTUS
+        self._validate_name(tx_params)      # sets: self.name                                                                    # sets: self.name
+        self._validate_geometry(tx_params)  # sets: self.geometry_type, self.is_annular, ...                                                     # sets: self.geometry_type, self.is_annular, ...
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -170,3 +171,40 @@ class CustomTransducer():
         
         self.name = tx_name
         logger.info(f"Transducer Name: {tx_name}")
+    
+    def _validate_geometry(self, tx_params: dict) -> None:
+        """
+        Validates the transducer geometry_type parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If geometry_type is missing, not valid type, or isn't valid choice
+        
+        Sets:
+            self.geometry_type (str): Validated transducer geometry_type
+            self.is_annular (bool): Boolean indicating geometry is of annular variation
+            self.is_flat (bool): Boolean indicating geometry is flat
+            self.is_spherical (bool): Boolean indicating geometry is spherical
+            self.is_steerable (bool): Boolean indicating if geometry type allows electronic steering of focus
+            self.steering_axes (tuple): Tuple indicating axes which have steering capabilities
+        """
+        
+        # Geometry type validation
+        tx_geometry_type = self._get_param('geometry_type', str, tx_params)
+        if tx_geometry_type not in TX_GEOMETRIES.keys():
+            valid_geoms_str = ", ".join(TX_GEOMETRIES.keys())
+            raise ValueError(f"{tx_geometry_type} is not a valid geometry choice\n Expecting one of the following: {valid_geoms_str}")
+        self.geometry_type = tx_geometry_type
+        logger.info(f"Transducer Geometry: {tx_geometry_type}")
+        
+        # Property assignments
+        tx_steering_axes = TX_GEOMETRIES[tx_geometry_type]['steering_axes']
+        if tx_steering_axes is not None:
+            self.is_steerable = True
+            self.steering_axes = tx_steering_axes
+            
+        self.is_annular = TX_GEOMETRIES[tx_geometry_type]['annular']
+        self.is_flat = TX_GEOMETRIES[tx_geometry_type]['flat']
+        self.is_spherical = TX_GEOMETRIES[tx_geometry_type]['spherical']
