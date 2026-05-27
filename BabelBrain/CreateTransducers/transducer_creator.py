@@ -7,6 +7,7 @@ import numpy as np
 import yaml
 
 # CONSTANTS
+COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
 TX_GEOMETRIES = {
     "simple_focused": {
         "annular": False,
@@ -45,8 +46,6 @@ TX_GEOMETRIES = {
     },
 }
 VALID_FREQUENCIES = range(200000,1005000,5000)
-VARS_CARTESIAN = ('x', 'y', 'z')
-VARS_SPHERICAL = ('r', 'theta', 'phi')
 
 class CustomTransducer():
 
@@ -301,31 +300,25 @@ class CustomTransducer():
             self.coordinate_system (str): Validated transducer element coordinate system
             self.coordinate_vars (list): List of dimension variable names (x,y,z for cartesian or r,theta,phi for spherical)
         """
-        # If it's not spherical, we set coordinate system ourselves
+        # Non-spherical geometries have a fixed coordinate system — no user input needed
         if not self.is_spherical:
             self.coordinate_system = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
-            
-            if self.coordinate_system == "cartesian":
-                self.coordinate_vars = VARS_CARTESIAN
-            elif self.coordinate_system == "spherical":
-                self.coordinate_vars = VARS_SPHERICAL
-                
+            self.coordinate_vars = COORD_VARS[self.coordinate_system]
+            logger.info(f"Transducer Coordinate System: {self.coordinate_system}")
+            logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
             return
         
+        # Spherical geometries allow user to choose coordinate system
         tx_coordinate_system = self._get_param('element_coordinate_system', str, tx_params)
         
-        # Check valid coordinate system was provided
+        # Validate user specified coordinate system
         valid_tx_coordinate_systems = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
         if tx_coordinate_system not in valid_tx_coordinate_systems:
             valid_coord_systems_str = ", ".join(valid_tx_coordinate_systems)
             raise ValueError(f"{tx_coordinate_system} is not a valid coordinate system choice\n Expecting one of the following: {valid_coord_systems_str}")
         
+        # Assign properties
         self.coordinate_system = tx_coordinate_system
+        self.coordinate_vars = COORD_VARS[tx_coordinate_system]
         logger.info(f"Transducer Coordinate System: {tx_coordinate_system}")
-        
-        # Assign coordinate variable names
-        if tx_coordinate_system == 'cartesian':
-            self.coordinate_vars = VARS_CARTESIAN
-        elif tx_coordinate_system == 'spherical':
-            self.coordinate_vars = VARS_SPHERICAL
         logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
