@@ -93,13 +93,80 @@ class CustomTransducer():
         return custom_tx_params
     
     def _validate_custom_tx_params(self,tx_params):
-        raise NotImplementedError("_validate_custom_tx_params not yet implemented")                                                                  # sets: self.PlanTUS
+        logger.info("Validating custom transducer file")
+        
+        self._validate_name(tx_params)  # sets: self.name                                                                     # sets: self.PlanTUS
     
     def create_tx_files(self):
-        raise NotImplementedError("create_tx_files not yet implemented")   
+        raise NotImplementedError("create_tx_files not yet implemented")
     
     def validate_custom_tx(self):
-        raise NotImplementedError("validate_custom_tx not yet implemented")   
+        raise NotImplementedError("validate_custom_tx not yet implemented")
 
     def update_tx_list(self):
-        raise NotImplementedError("update_tx_list not yet implemented")   
+        raise NotImplementedError("update_tx_list not yet implemented")
+    
+    def _get_param(self, key, expected_type, param_dict, optional=False):
+        """
+        Helper function to ensure key exists in dict and the value is the correct type
+        
+        Args:
+            key (str): key to be checked in param_dict.
+            expected_type (type): expected type of param_dict[key].
+            param_dict (dict): dict containing values.
+            optional (bool): Ignores missing key error if True.
+        
+        Returns:
+            val: value of param_dict[<key>]
+        
+        Raises:
+            ValueError: If key does not exist in param_dict or it's value type does not match expected_type
+        """
+        
+        # Check key exists
+        if key not in param_dict.keys():
+            if not optional:
+                raise ValueError(f"The following parameter is missing from the custom transducer yaml: {key}")
+            else:
+                return
+        
+        # Check value type
+        val = param_dict[key]
+        if not isinstance(val, expected_type):
+            type_name = expected_type.__name__ if isinstance(expected_type, type) else " or ".join(t.__name__ for t in expected_type)
+            raise ValueError(f"{key} was not specified as {type_name} in custom transducer yaml file")
+        
+        # Return value
+        if isinstance(val, (list, dict)):
+            return val.copy() # return copy for mutable values
+        else:
+            return val
+    
+    def _validate_name(self, tx_params: dict) -> None:
+        """
+        Validates the transducer name parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If name is missing, not valid type, contains spaces, 
+                        special characters, or does not begin with a letter.
+        
+        Sets:
+            self.name (str): Validated transducer name.
+        """
+        tx_name = self._get_param('name', str, tx_params)
+
+        if not re.match(r'^[a-zA-Z]', tx_name):
+            raise ValueError("Transducer name must begin with a letter")
+        
+        if re.search(r'\s', tx_name):
+            raise ValueError("Transducer name cannot contain spaces")
+        
+        special_chars = set(re.findall(r'[^a-zA-Z0-9_-]', tx_name))
+        if special_chars:
+            raise ValueError(f"Transducer name cannot contain special characters ({', '.join(special_chars)})")
+        
+        self.name = tx_name
+        logger.info(f"Transducer Name: {tx_name}")
