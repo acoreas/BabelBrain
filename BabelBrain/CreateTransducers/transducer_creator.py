@@ -95,9 +95,13 @@ class CustomTransducer():
     def _validate_custom_tx_params(self,tx_params):
         logger.info("Validating custom transducer file")
         
-        self._validate_name(tx_params)          # sets: self.name
-        self._validate_geometry(tx_params)      # sets: self.geometry_type, self.is_annular, ...
-        self._validate_frequencies(tx_params)   # sets: self.frequencies
+        self._validate_name(tx_params)                                                                          # sets: self.name
+        self._validate_geometry(tx_params)                                                                      # sets: self.geometry_type, self.is_annular, ...
+        self._validate_frequencies(tx_params)                                                                   # sets: self.frequencies
+        self._validate_positive_param('aperture_size', (int, float), tx_params, unit="m")                       # sets: self.aperture_size
+        self._validate_positive_param('focal_length',  (int, float), tx_params, unit="m")                       # sets: self.focal_length
+        self._validate_positive_param('distance_outplane', (int, float), tx_params, allow_zero=True, unit="m")  # sets: self.distance_outplane
+        self._validate_positive_param('num_elements',  int, tx_params)                                          # sets: self.num_elements
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -143,6 +147,40 @@ class CustomTransducer():
             return val.copy() # return copy for mutable values
         else:
             return val
+    
+    def _validate_positive_param(self, key, expected_type, tx_params, allow_zero=False, unit=""):
+        """
+        Validates that a transducer parameter exists, is the correct type, and is positive.
+
+        Args:
+            key (str): Parameter name to look up in tx_params.
+            expected_type (type or tuple of types): Expected type(s) for the parameter value.
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+            allow_zero (bool): If True, accepts values >= 0. If False, requires values > 0. Defaults to False.
+            unit (str): Unit of parameter
+
+        Raises:
+            ValueError: If the parameter is missing, not the expected type, or fails the
+                        positivity check.
+
+        Sets:
+            self.<key> (expected_type): Validated parameter value, converted to float if
+                                        expected_type is not int.
+        """
+        val = self._get_param(key, expected_type, tx_params)
+        
+        # Check value is positive
+        if allow_zero and val < 0:
+                raise ValueError(f"{key} ({val} {unit}) must be >= 0 {unit}")
+        elif not allow_zero and val <= 0:
+                raise ValueError(f"{key} ({val} {unit}) must be > 0")
+        
+        # Ensure value is float if that is expected type
+        result = float(val) if expected_type is not int else val
+        
+        # Assign to self
+        setattr(self,key,result) # Equivalent to self.<key> = result
+        logger.info(f"Transducer {key}: {result} {unit}")
     
     def _validate_name(self, tx_params: dict) -> None:
         """
