@@ -95,8 +95,9 @@ class CustomTransducer():
     def _validate_custom_tx_params(self,tx_params):
         logger.info("Validating custom transducer file")
         
-        self._validate_name(tx_params)      # sets: self.name                                                                    # sets: self.name
-        self._validate_geometry(tx_params)  # sets: self.geometry_type, self.is_annular, ...                                                     # sets: self.geometry_type, self.is_annular, ...
+        self._validate_name(tx_params)          # sets: self.name
+        self._validate_geometry(tx_params)      # sets: self.geometry_type, self.is_annular, ...
+        self._validate_frequencies(tx_params)   # sets: self.frequencies
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -208,3 +209,41 @@ class CustomTransducer():
         self.is_annular = TX_GEOMETRIES[tx_geometry_type]['annular']
         self.is_flat = TX_GEOMETRIES[tx_geometry_type]['flat']
         self.is_spherical = TX_GEOMETRIES[tx_geometry_type]['spherical']
+    
+    def _validate_frequencies(self, tx_params: dict) -> None:
+        """
+        Validates the transducer frequencies parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If frequencies is missing, not valid type (int or float), 
+            not in valid range (200-1000kHz), or isn't at valid frequency step (5kHz)
+        
+        Sets:
+            self.frequencies (list): Validated transducer frequencies
+        """
+        
+        tx_frequencies = self._get_param('frequencies', list, tx_params)
+        logger.info("Transducer Frequencies:")
+        for freq in tx_frequencies:
+            
+            # Ensure no decimal points in frequency
+            if not isinstance(freq,(int,float)):
+                raise ValueError(f"frequency entry ({freq}) was not specified as an int or float in custom transducer yaml file")
+            if not freq.is_integer():
+                raise ValueError(f"Invalid specified frequency ({freq} Hz), frequency must be an integer value")
+            
+            # Ensure frequency is at valid step in frequency range
+            int_freq = int(freq)
+            if int_freq not in VALID_FREQUENCIES:
+                raise ValueError(f"Invalid specified frequency ({int_freq} Hz), frequency must be at a 5kHz interval value within the 200-1000 kHz range")
+
+            # Add valid frequency to list
+            self.frequencies.append(int_freq)
+            logger.info(f"   {int_freq} Hz")
+        
+        # Check for duplicate frequencies 
+        if len(tx_frequencies) != len(set(tx_frequencies)):
+            raise ValueError("frequencies list contains duplicate entries")
