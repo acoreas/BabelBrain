@@ -39,8 +39,8 @@ TX_GEOMETRIES = {
     "focused_array": {
         "annular": False,
         "coordinate_system": ("cartesian", "spherical"),
-        "flat": True,
-        "spherical": False,
+        "flat": False,
+        "spherical": True,
         "steering_axes": {"x", "y", "z"},
     },
 }
@@ -102,6 +102,7 @@ class CustomTransducer():
         self._validate_positive_param('focal_length',  (int, float), tx_params, unit="m")                       # sets: self.focal_length
         self._validate_positive_param('distance_outplane', (int, float), tx_params, allow_zero=True, unit="m")  # sets: self.distance_outplane
         self._validate_positive_param('num_elements',  int, tx_params)                                          # sets: self.num_elements
+        self._validate_coordinate_system(tx_params)                                                             # sets: self.coordinate_system, self.coordinate_vars
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -285,3 +286,46 @@ class CustomTransducer():
         # Check for duplicate frequencies 
         if len(tx_frequencies) != len(set(tx_frequencies)):
             raise ValueError("frequencies list contains duplicate entries")
+
+    def _validate_coordinate_system(self, tx_params: dict) -> None:
+        """
+        Validates the transducer element_coordinate_system parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If element_coordinate_system is missing, not valid type, or isn't valid choice
+        
+        Sets:
+            self.coordinate_system (str): Validated transducer element coordinate system
+            self.coordinate_vars (list): List of dimension variable names (x,y,z for cartesian or r,theta,phi for spherical)
+        """
+        # If it's not spherical, we set coordinate system ourselves
+        if not self.is_spherical:
+            self.coordinate_system = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
+            
+            if self.coordinate_system == "cartesian":
+                self.coordinate_vars = VARS_CARTESIAN
+            elif self.coordinate_system == "spherical":
+                self.coordinate_vars = VARS_SPHERICAL
+                
+            return
+        
+        tx_coordinate_system = self._get_param('element_coordinate_system', str, tx_params)
+        
+        # Check valid coordinate system was provided
+        valid_tx_coordinate_systems = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
+        if tx_coordinate_system not in valid_tx_coordinate_systems:
+            valid_coord_systems_str = ", ".join(valid_tx_coordinate_systems)
+            raise ValueError(f"{tx_coordinate_system} is not a valid coordinate system choice\n Expecting one of the following: {valid_coord_systems_str}")
+        
+        self.coordinate_system = tx_coordinate_system
+        logger.info(f"Transducer Coordinate System: {tx_coordinate_system}")
+        
+        # Assign coordinate variable names
+        if tx_coordinate_system == 'cartesian':
+            self.coordinate_vars = VARS_CARTESIAN
+        elif tx_coordinate_system == 'spherical':
+            self.coordinate_vars = VARS_SPHERICAL
+        logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
