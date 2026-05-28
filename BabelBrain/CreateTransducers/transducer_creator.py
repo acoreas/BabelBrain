@@ -104,6 +104,7 @@ class CustomTransducer():
         self._validate_coordinate_system(tx_params)                                                             # sets: self.coordinate_system, self.coordinate_vars
         self._validate_elements(tx_params)                                                                      # sets: self.elements
         self._validate_annular(tx_params)                                                                       # sets: self.rings
+        self._validate_steering(tx_params)                                                                      # sets: self.xsteering_limits, self.ysteering_limits, self.zsteering_limits
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -220,6 +221,25 @@ class CustomTransducer():
         
         if bad_entries:
             raise ValueError(f"{context_name} contains invalid entries:\n" + "\n".join(bad_entries))
+    
+    def _validate_limits(self, limits: list, context_name: str = "") -> None:
+        """
+        Validate limits supplied in list
+        
+        Args:
+            limits (list): [min_value max_value]
+            context_name (str): Optional string to provide more detail to error message
+        
+        Raises:
+            ValueError: If max_value is less than min_value
+        """
+        if len(limits) != 2:
+            raise ValueError(f"{context_name} limits must have exactly 2 entries [min, max], got {len(limits)}")
+
+        min_limit = limits[0]
+        max_limit = limits[1]
+        if min_limit > max_limit:
+            raise ValueError(f"{context_name}: Min value ({min_limit}) must be less than max value ({max_limit})")
     
     def _validate_name(self, tx_params: dict) -> None:
         """
@@ -430,3 +450,51 @@ class CustomTransducer():
         self.rings = tx_rings_new
         logger.info(f"Transducer Inner Ring Diameters (mm):\n{inner_diams_np/1e3}")
         logger.info(f"Transducer Outer Ring Diameters (mm):\n{outer_diams_np/1e3}")
+
+    def _validate_steering(self, tx_params: dict) -> None:
+        """
+        Validates the transducer steering parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If steering or any of its subcomponents are missing or not valid type.
+                        If steering limits do not make sense physically.
+        
+        Sets:
+            self.xsteering_limits (list): [min_steering_limit, max_steering_limit]
+            self.ysteering_limits (list): [min_steering_limit, max_steering_limit]
+            self.zsteering_limits (list): [min_steering_limit, max_steering_limit]
+        """
+        
+        if not self.is_steerable:
+            return
+        
+        tx_steering = self._get_param('steering', dict, tx_params)
+        tx_xsteering = tx_ysteering = tx_zsteering = None
+        
+        if 'x' in self.steering_axes:
+            tx_xsteering = self._get_param('x', list, tx_steering)
+            self._validate_limits(tx_xsteering,"X Steering")
+            logger.info(f"Transducer X Steering Limits (m): {tx_xsteering}")
+        if 'y' in self.steering_axes:
+            tx_ysteering = self._get_param('y', list, tx_steering)
+            self._validate_limits(tx_ysteering,"Y Steering")
+            logger.info(f"Transducer Y Steering Limits (m): {tx_ysteering}")
+        if 'z' in self.steering_axes:
+            tx_zsteering = self._get_param('z', list, tx_steering)
+            self._validate_limits(tx_zsteering,"Z Steering")
+            logger.info(f"Transducer Z Steering Limits (m): {tx_zsteering}")
+        
+        self._validate_numeric_list_dict(tx_steering,2,'steering')
+        
+        # Check negative z steering does not exceed focal length
+        if 'z' in self.steering_axes:
+            abs_zsteering_min = abs(tx_zsteering[0])
+            if abs_zsteering_min > self.focal_length:
+                raise ValueError(f"Z minimum steering limit ({abs_zsteering_min}) exceeds focal length distance ({self.focal_length})")
+        
+        self.xsteering_limits = tx_xsteering
+        self.ysteering_limits = tx_ysteering
+        self.zsteering_limits = tx_zsteering
