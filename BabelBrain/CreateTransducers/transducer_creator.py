@@ -103,6 +103,7 @@ class CustomTransducer():
         self._validate_positive_param('num_elements',  int, tx_params)                                          # sets: self.num_elements
         self._validate_coordinate_system(tx_params)                                                             # sets: self.coordinate_system, self.coordinate_vars
         self._validate_elements(tx_params)                                                                      # sets: self.elements
+        self._validate_annular(tx_params)                                                                       # sets: self.rings
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -387,3 +388,45 @@ class CustomTransducer():
         self.elements = tx_elements
         for dim_key,dim_values in tx_elements.items():
             logger.info(f"Transducer Element {dim_key} Values:\n{dim_values}")
+    
+    def _validate_annular(self, tx_params: dict) -> None:
+        """
+        Validates the transducer annular parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If annular or any of its subcomponents are missing or not valid type. If there is a mismatch in
+                        number of rings and the num_element parameter. If ring diameters do not make sense physically.
+        
+        Sets:
+            self.rings (dict): Validated transducer ring diameters.
+        """
+        if not self.is_annular:
+            return
+        
+        tx_rings = self._get_param('annular', dict, tx_params)
+        tx_rings_new = {}
+        inner_diameters = self._get_param('inner_ring_diameters', list, tx_rings)
+        outer_diameters = self._get_param('outer_ring_diameters', list, tx_rings)
+        self._validate_numeric_list_dict(tx_rings,self.num_elements,'annular',allow_negative=False)
+        
+        # Check outer ring is always bigger than inner ring
+        inner_diams_np = np.array(inner_diameters)
+        outer_diams_np = np.array(outer_diameters)
+        ring_diff = outer_diams_np - inner_diams_np
+        ring_err_indices = np.where(ring_diff <= 0)[0]
+        bad_entries = ''
+        for index in ring_err_indices:
+            bad_entries+=f"    inner_ring_diameters[{index}] ({inner_diameters[index]}) > outer_ring_diameters[{index}] ({outer_diameters[index]})\n"
+        if len(ring_err_indices) > 0:
+            raise ValueError(f"inner_ring_diameters cannot be bigger than corresponding outer_ring_diameter:\n{bad_entries}")
+        
+        # Rename keys
+        tx_rings_new["inner_diameters"] = inner_diameters
+        tx_rings_new["outer_diameters"] = outer_diameters
+        
+        self.rings = tx_rings_new
+        logger.info(f"Transducer Inner Ring Diameters (mm):\n{inner_diams_np/1e3}")
+        logger.info(f"Transducer Outer Ring Diameters (mm):\n{outer_diams_np/1e3}")
