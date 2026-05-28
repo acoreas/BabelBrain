@@ -102,6 +102,7 @@ class CustomTransducer():
         self._validate_positive_param('distance_outplane', (int, float), tx_params, allow_zero=True, unit="m")  # sets: self.distance_outplane
         self._validate_positive_param('num_elements',  int, tx_params)                                          # sets: self.num_elements
         self._validate_coordinate_system(tx_params)                                                             # sets: self.coordinate_system, self.coordinate_vars
+        self._validate_elements(tx_params)                                                                      # sets: self.elements
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -181,6 +182,43 @@ class CustomTransducer():
         # Assign to self
         setattr(self,key,result) # Equivalent to self.<key> = result
         logger.info(f"Transducer {key}: {result} {unit}")
+    
+    def _validate_numeric_list_dict(self, param_dict, num_elements=None, context_name="parameter", allow_negative=True):
+        """
+        Validates that all entries in a dict of lists are numeric and match the expected length.
+
+        Iterates over each key-value pair in param_dict, confirming that every list has
+        exactly num_elements entries and that each entry is an int or float. All invalid
+        entries are collected before raising, so the error message reports every problem
+        at once rather than stopping at the first.
+
+        Args:
+            param_dict (dict): Dictionary mapping parameter names to lists of values.
+            num_elements (int): Expected length of each list, typically self.num_elements.
+            context_name (str): Human-readable label for param_dict used in error messages
+                                (e.g. 'elements', 'annular').
+            allow_negative (bool): Set to False if element values should be positive
+
+        Raises:
+            ValueError: If any list length does not match num_elements, or if any entry
+                        is not an int or float. Length mismatches are raised immediately
+                        on the offending key; type errors are collected and raised together
+                        after all lists are checked.
+        """
+    
+        bad_entries = []
+        for key, values in param_dict.items():
+            if num_elements is not None and len(values) != num_elements:
+                raise ValueError(f"Number of entries in {key} ({len(values)}) does not match num_elements ({num_elements})")
+            
+            for i, val in enumerate(values):
+                if not isinstance(val, (int, float)):
+                    bad_entries.append(f"   {key}[{i}]: {val!r} (expected numeric)")
+                elif not allow_negative and val < 0:
+                    bad_entries.append(f"   {key}[{i}]: {val!r} (negative values not allowed)")
+        
+        if bad_entries:
+            raise ValueError(f"{context_name} contains invalid entries:\n" + "\n".join(bad_entries))
     
     def _validate_name(self, tx_params: dict) -> None:
         """
@@ -322,3 +360,30 @@ class CustomTransducer():
         self.coordinate_vars = COORD_VARS[tx_coordinate_system]
         logger.info(f"Transducer Coordinate System: {tx_coordinate_system}")
         logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
+         
+    def _validate_elements(self, tx_params: dict) -> None:
+        """
+        Validates the transducer elements parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If elements or any of its subcomponents are missing or not valid type. If there is a mismatch in
+                        number of sub elements and the num_element parameter. If element position do not make sense physically.
+        
+        Sets:
+            self.elements (dict): Validated transducer elements.
+        """
+        # Element coordinates do not need to be specified for non-spherical transducers
+        if not self.is_spherical:
+            return
+        
+        tx_elements = self._get_param('elements', dict, tx_params)
+        for dim_var in self.coordinate_vars:
+            _ = self._get_param(dim_var, list, tx_elements)
+        self._validate_numeric_list_dict(tx_elements,self.num_elements,'elements')
+        
+        self.elements = tx_elements
+        for dim_key,dim_values in tx_elements.items():
+            logger.info(f"Transducer Element {dim_key} Values:\n{dim_values}")
