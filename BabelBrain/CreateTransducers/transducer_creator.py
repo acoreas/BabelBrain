@@ -7,7 +7,10 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
 # CONSTANTS
+# =============================================================================
+
 COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
 TX_GEOMETRIES = {
     "simple_focused": {
@@ -26,24 +29,24 @@ TX_GEOMETRIES = {
     },
     "focused_annular_array": {
         "annular": True,
-        "coordinate_system": ("cartesian", "spherical"),
+        "coordinate_system": ("cartesian", "spherical"),  # user-selectable
         "flat": False,
         "spherical": True,
-        "steering_axes": {"z"},
+        "steering_axes": {"z"},  # can only steer along depth axis
     },
     "flat_array_2D": {
         "annular": False,
         "coordinate_system": "cartesian",
         "flat": True,
         "spherical": False,
-        "steering_axes": {"x", "y", "z"},
+        "steering_axes": {"x", "y", "z"},  # full 3D steering
     },
     "focused_array": {
         "annular": False,
-        "coordinate_system": ("cartesian", "spherical"),
+        "coordinate_system": ("cartesian", "spherical"),  # user-selectable
         "flat": False,
         "spherical": True,
-        "steering_axes": {"x", "y", "z"},
+        "steering_axes": {"x", "y", "z"},  # full 3D steering
     },
 }
 VALID_FREQUENCIES = range(200000,1005000,5000)
@@ -52,7 +55,7 @@ class CustomTransducer:
 
     def __init__(self, transducer_yaml: str) -> None:
         
-        # Intial Values
+        # Initial Values
         self.aperture_size: float | None = None
         self.coordinate_system: str | None = None
         self.coordinate_vars: list[str] = []
@@ -78,7 +81,11 @@ class CustomTransducer:
         self._validate_custom_tx_params(tx_params)
         
         logger.info("Custom transducer file loading and validation complete")
-        
+    
+    # =========================================================================
+    # FILE LOADING
+    # =========================================================================
+    
     def load_custom_tx_config_file(self, tx_yaml: str) -> dict:
 
         logger.info("Loading custom transducer file")
@@ -92,9 +99,15 @@ class CustomTransducer:
 
         return custom_tx_params
     
+    # =========================================================================
+    # VALIDATION PIPELINE
+    # =========================================================================
+    
     def _validate_custom_tx_params(self, tx_params: dict) -> None:
         logger.info("Validating custom transducer file")
         
+        # Validation order matters: geometry and num_elements must be set before
+        # downstream validators (e.g. _validate_elements) that depend on them.
         self._validate_name(tx_params)                                                                          # sets: self.name
         self._validate_geometry(tx_params)                                                                      # sets: self.geometry_type, self.is_annular, ...
         self._validate_frequencies(tx_params)                                                                   # sets: self.frequencies
@@ -108,6 +121,10 @@ class CustomTransducer:
         self._validate_steering(tx_params)                                                                      # sets: self.xsteering_limits, self.ysteering_limits, self.zsteering_limits
         self._validate_PlanTUS(tx_params)                                                                       # sets: self.PlanTUS
     
+    # =========================================================================
+    # PUBLIC / FUTURE API
+    # =========================================================================
+    
     def create_tx_files(self) -> None:
         raise NotImplementedError("create_tx_files not yet implemented")
     
@@ -116,6 +133,10 @@ class CustomTransducer:
 
     def update_tx_list(self) -> None:
         raise NotImplementedError("update_tx_list not yet implemented")
+    
+    # =========================================================================
+    # INTERNAL HELPERS (GENERIC)
+    # =========================================================================
     
     def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False) -> object:
         """
@@ -147,9 +168,9 @@ class CustomTransducer:
             type_name = expected_type.__name__ if isinstance(expected_type, type) else " or ".join(t.__name__ for t in expected_type)
             raise ValueError(f"{key} was not specified as {type_name} in custom transducer yaml file")
         
-        # Return value
+        # Return a copy for mutable types to prevent accidental mutation of the original yaml data
         if isinstance(val, (list, dict)):
-            return val.copy() # return copy for mutable values
+            return val.copy()
         else:
             return val
     
@@ -210,6 +231,7 @@ class CustomTransducer:
                         after all lists are checked.
         """
     
+        # Collect all invalid entries before raising so the user sees every problem at once
         bad_entries = []
         for key, values in param_dict.items():
             if num_elements is not None and len(values) != num_elements:
@@ -242,6 +264,10 @@ class CustomTransducer:
         max_limit = limits[1]
         if min_limit > max_limit:
             raise ValueError(f"{context_name}: Min value ({min_limit}) must be less than max value ({max_limit})")
+    
+    # =========================================================================
+    # FIELD VALIDATORS
+    # =========================================================================
     
     def _validate_name(self, tx_params: dict) -> None:
         """
@@ -447,6 +473,7 @@ class CustomTransducer:
         tx_rings_new["outer_diameters"] = outer_diameters
         self.rings = tx_rings_new
         
+        # Convert to mm for human-readable logging (yaml values are in metres)
         inner_diams_mm = [d * 1e3 for d in inner_diameters]
         outer_diams_mm = [d * 1e3 for d in outer_diameters]
         logger.info(f"Transducer Inner Ring Diameters (mm): {inner_diams_mm}")
@@ -475,6 +502,7 @@ class CustomTransducer:
         tx_steering = self._get_param('steering', dict, tx_params)
         tx_xsteering = tx_ysteering = tx_zsteering = None
         
+        # Only validate axes that the geometry actually supports
         if 'x' in self.steering_axes:
             tx_xsteering = self._get_param('x', list, tx_steering)
             self._validate_limits(tx_xsteering,"X Steering")
@@ -490,7 +518,7 @@ class CustomTransducer:
         
         self._validate_numeric_list_dict(tx_steering,2,'steering')
         
-        # Check negative z steering does not exceed focal length
+        # Check negative z steering does not exceed focal length as this is not physically possible
         if 'z' in self.steering_axes:
             abs_zsteering_min = abs(tx_zsteering[0])
             if abs_zsteering_min > self.focal_length:
@@ -516,11 +544,13 @@ class CustomTransducer:
             self.PlanTUS (dict): Validated PlanTUS dict
         """
         
+        # PlanTUS is optional; skip validation entirely if the key is absent
         tx_planTUS = self._get_param('PlanTUS', dict, tx_params, optional=True)
         tx_planTUS_new = {}
         
         if tx_planTUS is not None:
             logger.info("PlanTUS Parameters")
+            # Work from a copy so we can remove matched frequencies and detect any omissions at the end
             tx_freqs = self.frequencies.copy()
 
             for planTUS_key, planTUS_value in tx_planTUS.items():
@@ -532,6 +562,7 @@ class CustomTransducer:
                 planTUS_freq = int(planTUS_key)
                 logger.info(f"    {planTUS_freq} Hz")
                 
+                # PlanTUS entries must correspond to a frequency already declared for this transducer
                 if planTUS_freq not in tx_freqs:
                     raise ValueError(f"PlanTUS frequency ({planTUS_freq} Hz) is not listed as one of the transducer frequencies")
                 
@@ -554,9 +585,10 @@ class CustomTransducer:
                 tx_planTUS_new[planTUS_freq] = {'focal_distances': tx_planTUS_focal_dists, 
                                                 'FHMLs': tx_planTUS_focal_FHMLs}
                 
-                # Remove current PlanTUS freq from check
+                # Remove current PlanTUS freq from check list so we can detect missing entries below
                 tx_freqs.remove(planTUS_freq)
             
+            # Any frequencies still in tx_freqs that were never covered by a PlanTUS entry
             if len(tx_freqs) > 0:
                 missing_details = ", ".join(f"{freq} Hz" for freq in tx_freqs)
                 raise ValueError(f"PlanTUS parameter is missing details for following frequencies: {missing_details}")
