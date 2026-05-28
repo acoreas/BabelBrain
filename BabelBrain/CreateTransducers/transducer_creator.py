@@ -6,7 +6,6 @@ import numpy as np
 import yaml
 
 logger = logging.getLogger(__name__)
-logger.setLevel('INFO')
 
 # CONSTANTS
 COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
@@ -51,28 +50,28 @@ VALID_FREQUENCIES = range(200000,1005000,5000)
 
 class CustomTransducer:
 
-    def __init__(self,transducer_yaml):
+    def __init__(self, transducer_yaml: str) -> None:
         
         # Intial Values
-        self.aperture_size = None
-        self.coordinate_system = None
-        self.coordinate_vars = []
-        self.distance_outplane = None
-        self.elements = None
-        self.frequencies = []
-        self.focal_length = None
-        self.geometry_type = None
-        self.is_annular = False
-        self.is_spherical = False
-        self.is_steerable = False
-        self.name = None
-        self.num_elements = None
-        self.PlanTUS = None
-        self.rings = None
-        self.steering_axes = None
-        self.xsteering_limits = None
-        self.ysteering_limits = None
-        self.zsteering_limits = None
+        self.aperture_size: float | None = None
+        self.coordinate_system: str | None = None
+        self.coordinate_vars: list[str] = []
+        self.distance_outplane: float | None = None
+        self.elements: dict | None = None
+        self.frequencies: list[int] = []
+        self.focal_length: float | None = None
+        self.geometry_type: str | None = None
+        self.is_annular: bool = False
+        self.is_spherical: bool = False
+        self.is_steerable: bool = False
+        self.name: str | None = None
+        self.num_elements: int | None = None
+        self.PlanTUS: dict | None = None
+        self.rings: dict | None = None
+        self.steering_axes: set | None = None
+        self.xsteering_limits: list | None = None
+        self.ysteering_limits: list | None = None
+        self.zsteering_limits: list | None = None
         
         # Load/Validate transducer details
         tx_params = self.load_custom_tx_config_file(transducer_yaml)
@@ -80,7 +79,7 @@ class CustomTransducer:
         
         logger.info("Custom transducer file loading and validation complete")
         
-    def load_custom_tx_config_file(self,tx_yaml):
+    def load_custom_tx_config_file(self, tx_yaml: str) -> dict:
 
         logger.info("Loading custom transducer file")
         
@@ -93,7 +92,7 @@ class CustomTransducer:
 
         return custom_tx_params
     
-    def _validate_custom_tx_params(self,tx_params):
+    def _validate_custom_tx_params(self, tx_params: dict) -> None:
         logger.info("Validating custom transducer file")
         
         self._validate_name(tx_params)                                                                          # sets: self.name
@@ -109,16 +108,16 @@ class CustomTransducer:
         self._validate_steering(tx_params)                                                                      # sets: self.xsteering_limits, self.ysteering_limits, self.zsteering_limits
         self._validate_PlanTUS(tx_params)                                                                       # sets: self.PlanTUS
     
-    def create_tx_files(self):
+    def create_tx_files(self) -> None:
         raise NotImplementedError("create_tx_files not yet implemented")
     
-    def validate_custom_tx(self):
+    def validate_custom_tx(self) -> None:
         raise NotImplementedError("validate_custom_tx not yet implemented")
 
-    def update_tx_list(self):
+    def update_tx_list(self) -> None:
         raise NotImplementedError("update_tx_list not yet implemented")
     
-    def _get_param(self, key, expected_type, param_dict, optional=False):
+    def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False) -> object:
         """
         Helper function to ensure key exists in dict and the value is the correct type
         
@@ -154,7 +153,7 @@ class CustomTransducer:
         else:
             return val
     
-    def _validate_positive_param(self, key, expected_type, tx_params, allow_zero=False, unit=""):
+    def _validate_positive_param(self, key: str, expected_type: type | tuple[type, ...], tx_params: dict, allow_zero: bool = False, unit: str = "") -> None:
         """
         Validates that a transducer parameter exists, is the correct type, and is positive.
 
@@ -188,7 +187,7 @@ class CustomTransducer:
         setattr(self,key,result) # Equivalent to self.<key> = result
         logger.info(f"Transducer {key}: {result} {unit}")
     
-    def _validate_numeric_list_dict(self, param_dict, num_elements=None, context_name="parameter", allow_negative=True):
+    def _validate_numeric_list_dict( self, param_dict: dict, num_elements: int | None = None, context_name: str = "parameter", allow_negative: bool = True) -> None:
         """
         Validates that all entries in a dict of lists are numeric and match the expected length.
 
