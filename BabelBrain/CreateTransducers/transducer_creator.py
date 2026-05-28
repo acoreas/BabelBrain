@@ -1,10 +1,12 @@
 import logging
-logger = logging.getLogger(__name__)
 import os
 import re
 
 import numpy as np
 import yaml
+
+logger = logging.getLogger(__name__)
+logger.setLevel('INFO')
 
 # CONSTANTS
 COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
@@ -47,7 +49,7 @@ TX_GEOMETRIES = {
 }
 VALID_FREQUENCIES = range(200000,1005000,5000)
 
-class CustomTransducer():
+class CustomTransducer:
 
     def __init__(self,transducer_yaml):
         
@@ -408,7 +410,7 @@ class CustomTransducer():
         
         self.elements = tx_elements
         for dim_key,dim_values in tx_elements.items():
-            logger.info(f"Transducer Element {dim_key} Values:\n{dim_values}")
+            logger.debug(f"Transducer Element {dim_key} Values:\n{dim_values}")
     
     def _validate_annular(self, tx_params: dict) -> None:
         """
@@ -434,23 +436,22 @@ class CustomTransducer():
         self._validate_numeric_list_dict(tx_rings,self.num_elements,'annular',allow_negative=False)
         
         # Check outer ring is always bigger than inner ring
-        inner_diams_np = np.array(inner_diameters)
-        outer_diams_np = np.array(outer_diameters)
-        ring_diff = outer_diams_np - inner_diams_np
-        ring_err_indices = np.where(ring_diff <= 0)[0]
-        bad_entries = ''
-        for index in ring_err_indices:
-            bad_entries+=f"    inner_ring_diameters[{index}] ({inner_diameters[index]}) > outer_ring_diameters[{index}] ({outer_diameters[index]})\n"
-        if len(ring_err_indices) > 0:
+        bad_entries = []
+        for i, (inner, outer) in enumerate(zip(inner_diameters, outer_diameters)):
+            if outer <= inner:
+                bad_entries.append(f"inner_ring_diameters[{i}] ({inner}) > outer_ring_diameters[{i}] ({outer})")
+        if bad_entries:
             raise ValueError(f"inner_ring_diameters cannot be bigger than corresponding outer_ring_diameter:\n{bad_entries}")
-        
+            
         # Rename keys
         tx_rings_new["inner_diameters"] = inner_diameters
         tx_rings_new["outer_diameters"] = outer_diameters
-        
         self.rings = tx_rings_new
-        logger.info(f"Transducer Inner Ring Diameters (mm):\n{inner_diams_np/1e3}")
-        logger.info(f"Transducer Outer Ring Diameters (mm):\n{outer_diams_np/1e3}")
+        
+        inner_diams_mm = [d * 1e3 for d in inner_diameters]
+        outer_diams_mm = [d * 1e3 for d in outer_diameters]
+        logger.info(f"Transducer Inner Ring Diameters (mm): {inner_diams_mm}")
+        logger.info(f"Transducer Outer Ring Diameters (mm): {outer_diams_mm}")
 
     def _validate_steering(self, tx_params: dict) -> None:
         """
