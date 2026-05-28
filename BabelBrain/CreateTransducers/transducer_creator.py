@@ -105,6 +105,7 @@ class CustomTransducer():
         self._validate_elements(tx_params)                                                                      # sets: self.elements
         self._validate_annular(tx_params)                                                                       # sets: self.rings
         self._validate_steering(tx_params)                                                                      # sets: self.xsteering_limits, self.ysteering_limits, self.zsteering_limits
+        self._validate_PlanTUS(tx_params)                                                                       # sets: self.PlanTUS
     
     def create_tx_files(self):
         raise NotImplementedError("create_tx_files not yet implemented")
@@ -498,3 +499,66 @@ class CustomTransducer():
         self.xsteering_limits = tx_xsteering
         self.ysteering_limits = tx_ysteering
         self.zsteering_limits = tx_zsteering
+        
+    def _validate_PlanTUS(self, tx_params: dict) -> None:
+        """
+        Validates the transducer PlanTUS parameter.
+        
+        Args:
+            tx_params (dict): Raw transducer parameters loaded from yaml file.
+        
+        Raises:
+            ValueError: If listed frequencies do not match transducer frequencies. If FocalDistanceList or 
+                        FHMLList are missing from file or are wrong type. If the number of elements between
+                        FocalDistanceList and FHMLList do not match.
+        
+        Sets:
+            self.PlanTUS (dict): Validated PlanTUS dict
+        """
+        
+        tx_planTUS = self._get_param('PlanTUS', dict, tx_params, optional=True)
+        tx_planTUS_new = {}
+        
+        if tx_planTUS is not None:
+            logger.info("PlanTUS Parameters")
+            tx_freqs = self.frequencies.copy()
+
+            for planTUS_key, planTUS_value in tx_planTUS.items():
+                
+                # Validate PlanTUS frequency
+                if not isinstance(planTUS_key,(int,float)):
+                    raise ValueError(f"Frequencies under PlanTUS should be int or float, you put {planTUS_key} ({type(planTUS_key)})")
+                
+                planTUS_freq = int(planTUS_key)
+                logger.info(f"    {planTUS_freq} Hz")
+                
+                if planTUS_freq not in tx_freqs:
+                    raise ValueError(f"PlanTUS frequency ({planTUS_freq} Hz) is not listed as one of the transducer frequencies")
+                
+                # Validate elements in PlanTUS frequency
+                if planTUS_value is None:
+                    raise ValueError(f"FocalDistanceList and FHMLList are missing from {planTUS_key} parameter under PlanTUS parameter")
+                tx_planTUS_focal_dists = self._get_param('FocalDistanceList', list, planTUS_value)
+                tx_planTUS_focal_FHMLs = self._get_param('FHMLList', list, planTUS_value)
+                self._validate_numeric_list_dict(planTUS_value,None,f"PlanTUS {planTUS_key}",allow_negative=False)
+                
+                # Element Num check
+                if len(tx_planTUS_focal_dists) != len(tx_planTUS_focal_FHMLs):
+                    raise ValueError(f"Number of elements in FocalDistanceList ({len(tx_planTUS_focal_dists)}) does not match number in FHMLList ({len(tx_planTUS_focal_FHMLs)})")
+                                
+                # Rename keys
+                logger.info("        focal_distances (m):")
+                logger.info(f"           {tx_planTUS_focal_dists}")
+                logger.info("        FHMLs:")
+                logger.info(f"           {tx_planTUS_focal_FHMLs}")
+                tx_planTUS_new[planTUS_freq] = {'focal_distances': tx_planTUS_focal_dists, 
+                                                'FHMLs': tx_planTUS_focal_FHMLs}
+                
+                # Remove current PlanTUS freq from check
+                tx_freqs.remove(planTUS_freq)
+            
+            if len(tx_freqs) > 0:
+                missing_details = ", ".join(f"{freq} Hz" for freq in tx_freqs)
+                raise ValueError(f"PlanTUS parameter is missing details for following frequencies: {missing_details}")
+        
+            self.PlanTUS = tx_planTUS_new
