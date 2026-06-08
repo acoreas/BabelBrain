@@ -13,9 +13,13 @@ palette), so call the builder when applying:
 so the other form stylesheets stay consistent.
 """
 
+import platform
+
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory, QAbstractSpinBox
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 ACCENT     = "#00c8ff"      # cyan — hover / focus border (both themes)
 LABEL_BLUE = "#166eff"
@@ -56,6 +60,37 @@ def disabled_text_color(widget=None):
     return "#808080" if palette_is_dark(widget) else "palette(mid)"
 
 
+def scrollbar_track_color(widget=None):
+    """Scrollbar groove. palette(base) barely separates from the window on dark
+    themes, so use the slightly lighter palette(mid) there to define the track."""
+    return "palette(mid)" if palette_is_dark(widget) else "palette(base)"
+
+
+_fusion_style = None
+
+
+def apply_native_spinbox_style(root):
+    """Windows only: render every spin box under `root` with the Fusion style.
+
+    The windowsvista style draws stylesheet'd spin boxes with big side-by-side
+    buttons that overlap the text and size inconsistently; Fusion draws small,
+    vertically stacked, palette-aware arrows with uniform sizing (like macOS).
+    Our border/padding QSS still applies on top. No-op on macOS/Linux.
+
+    One shared style instance is kept alive (QWidget.setStyle does not take
+    ownership) and reused for all spin boxes.
+    """
+    if not _IS_WINDOWS:
+        return
+    global _fusion_style
+    if _fusion_style is None:
+        _fusion_style = QStyleFactory.create("Fusion")
+    if _fusion_style is None:
+        return
+    for sb in root.findChildren(QAbstractSpinBox):
+        sb.setStyle(_fusion_style)
+
+
 # Compact, flat style for matplotlib's NavigationToolbar2QT (a QToolBar). The
 # default toolbar is tall (large icons + padded buttons) and unstyled; this
 # shrinks the icons and flattens the buttons so it blends with the app.
@@ -86,6 +121,7 @@ def app_qss(widget=None):
     _tabsel = selected_tab_color(widget)
     _handle = scrollbar_handle_color(widget)
     _disabled = disabled_text_color(widget)
+    _track = scrollbar_track_color(widget)
     return f"""
 QLabel {{ font-size: 11px; }}
 
@@ -121,7 +157,7 @@ QTabBar::tab:selected {{ color: {_tabsel}; font-weight: bold; }}
 QTabBar::tab:hover:!selected {{ color: {ACCENT}; }}
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    border: 1px solid palette(mid);
+    border: 1px solid {_border};
     border-radius: 3px;
     padding: 0px 4px;
     min-height: 18px;
@@ -129,14 +165,6 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1px solid {ACCENT};
-}}
-QComboBox::drop-down {{ border: none; width: 18px; }}
-QComboBox::down-arrow {{
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid palette(text);
-    margin-right: 6px;
 }}
 QComboBox QLineEdit {{
     border: none;
@@ -173,8 +201,8 @@ QHeaderView::section {{
     font-size: 11px;
 }}
 
-QScrollBar:horizontal {{ background: palette(base); height: 14px; border-radius: 7px; margin: 0; }}
-QScrollBar:vertical {{ background: palette(base); width: 14px; border-radius: 7px; margin: 0; }}
+QScrollBar:horizontal {{ background: {_track}; height: 14px; border-radius: 7px; margin: 0; }}
+QScrollBar:vertical {{ background: {_track}; width: 14px; border-radius: 7px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: {_handle}; border-radius: 6px; min-width: 20px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {_handle}; border-radius: 6px; min-height: 20px; margin: 2px; }}
 QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}

@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (
 
 from GUIComponents.AppStyle import (
     selected_tab_color, button_border_color,
-    scrollbar_handle_color, disabled_text_color,
+    scrollbar_handle_color, disabled_text_color, scrollbar_track_color,
+    apply_native_spinbox_style,
 )
 
 
@@ -47,6 +48,7 @@ def _form_qss(widget=None):
     _tabsel = selected_tab_color(widget)
     _handle = scrollbar_handle_color(widget)
     _disabled = disabled_text_color(widget)
+    _track = scrollbar_track_color(widget)
     return f"""
 QLabel {{ font-size: 11px; }}
 
@@ -87,7 +89,7 @@ QTabBar::tab::disabled {{
 }}
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    border: 1px solid palette(mid);
+    border: 1px solid {_border};
     border-radius: 3px;
     padding: 0px 4px;
     min-height: 18px;
@@ -95,16 +97,6 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1px solid {ACCENT};
-}}
-QComboBox::drop-down {{ border: none; width: 18px; }}
-/* A stylesheet-rendered combo with a customized ::drop-down draws no arrow
-   unless ::down-arrow is given — draw one with a CSS triangle (no image). */
-QComboBox::down-arrow {{
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid palette(text);
-    margin-right: 6px;
 }}
 /* Editable combos (e.g. USMaskkHzDropDown) render via an internal QLineEdit,
    and the popup list is a separate view — neither inherits the combo font
@@ -126,7 +118,7 @@ QTextBrowser {{
 QCheckBox {{ spacing: 5px; font-size: 11px; }}
 
 QScrollBar:horizontal {{
-    background: palette(base);
+    background: {_track};
     height: 14px;
     border-radius: 7px;
     margin: 0;
@@ -175,6 +167,7 @@ class BabelBrainMainForm(QWidget):
         self.setObjectName("Widget")  # preserves original root name
         self.setStyleSheet(_form_qss(self))
         self._build()
+        apply_native_spinbox_style(self)  # Windows: compact stacked spin arrows
 
     # ── Construction ──────────────────────────────────────────────────────
     def _build(self):
