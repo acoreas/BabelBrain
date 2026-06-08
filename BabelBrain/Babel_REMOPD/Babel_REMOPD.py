@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout
 from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread,Qt
 from PySide6.QtUiTools import QUiLoader
 
@@ -40,15 +40,15 @@ def resource_path():  # needed for bundling
 
 class REMOPD(BabelBasePhaseArray): 
     def __init__(self,parent=None,MainApp=None):
-        super().__init__(parent=parent,MainApp=MainApp,formfile=os.path.join(resource_path(), "form.ui"))
+        super().__init__(parent=parent,MainApp=MainApp,formtype=os.path.join(resource_path(), "."))
 
-    def load_ui(self,formfile):
-        loader = QUiLoader()
-        path = os.fspath(formfile)
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget =loader.load(ui_file, self)
-        ui_file.close()
+    def load_ui(self,formtype):
+        from Babel_REMOPD.REMOPDForm import REMOPDForm
+        self.Widget = REMOPDForm(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
 
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
 
@@ -174,13 +174,18 @@ class REMOPD(BabelBasePhaseArray):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.EndSimulation)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
+
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+
             self.thread.start()
             self._MainApp.showClockDialog()
         else:
@@ -210,6 +215,7 @@ class RunAcousticSim(QObject):
 
     finished = Signal(object)
     endError = Signal()
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp,bDryRun=False):
         super(RunAcousticSim, self).__init__()
@@ -294,7 +300,10 @@ class RunAcousticSim(QObject):
                     cMsg=queue.get()
                     if type(cMsg) is str:
                         print(cMsg,end='')
+                        if 'CTS:' in cMsg:
+                            self.logTelemetry.emit(cMsg)
                         if '--Babel-Brain-Low-Error' in cMsg:
+                            self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                             bNoError=False
                     else:
                         assert(type(cMsg) is dict)
@@ -304,7 +313,10 @@ class RunAcousticSim(QObject):
                 cMsg=queue.get()
                 if type(cMsg) is str:
                     print(cMsg,end='')
+                    if 'CTS:' in cMsg:
+                        self.logTelemetry.emit(cMsg)
                     if '--Babel-Brain-Low-Error' in cMsg:
+                        self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                         bNoError=False
                 else:
                     assert(type(cMsg) is dict)
@@ -316,6 +328,7 @@ class RunAcousticSim(QObject):
                 print("*"*40)
                 print("*"*5+" DONE ultrasound simulation.")
                 print("*"*40)
+                self.logTelemetry.emit("CTS:L2:S2: TOTAL TIME " + str(TotalTime))
                 self._mainApp.UpdateComputationalTime('ultrasound',TotalTime)
                 self.finished.emit(OutFiles)
             else:

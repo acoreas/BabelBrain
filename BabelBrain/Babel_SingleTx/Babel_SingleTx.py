@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QVBoxLayout
 from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread
 from PySide6.QtUiTools import QUiLoader
 
@@ -40,23 +40,24 @@ def DistanceOutPlaneToFocus(FocalLength,Diameter):
     return np.sqrt(FocalLength**2-(Diameter/2)**2)
 
 class SingleTx(BabelBaseTx):
-    def __init__(self,parent=None,MainApp=None,formfile='form.ui'):
+    def __init__(self,parent=None,MainApp=None):
         super(SingleTx, self).__init__(parent)
         self.static_canvas=None
         self._MainApp=MainApp
         self._bIgnoreUpdate=False
         self._ZMaxSkin = 0.0 # maximum
         self.DefaultConfig()
-        self.load_ui(formfile)
+        self.load_ui()
 
 
-    def load_ui(self,formfile):
-        loader = QUiLoader()
-        path = os.path.join(resource_path(), formfile)
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget =loader.load(ui_file, self)
-        ui_file.close()
+    def load_ui(self):
+        from Babel_SingleTx.SingleTxForm import SingleTxForm
+        self.Widget = SingleTxForm(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
+
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
         self.Widget.CalculateAcField.clicked.connect(self.RunSimulation)
         self.Widget.SkinDistanceSpinBox.valueChanged.connect(self.UpdateTxInfo)
@@ -170,14 +171,18 @@ class SingleTx(BabelBaseTx):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.UpdateAcResults)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
  
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+
             self.thread.start()
 
             self._MainApp.showClockDialog()
@@ -196,6 +201,7 @@ class RunAcousticSim(QObject):
 
     finished = Signal()
     endError = Signal()
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp,extrasuffix,Aperture,FocalLength):
         super(RunAcousticSim, self).__init__()
@@ -259,13 +265,19 @@ class RunAcousticSim(QObject):
             while queue.empty() == False:
                 cMsg=queue.get()
                 print(cMsg,end='')
+                if 'CTS:' in cMsg:
+                    self.logTelemetry.emit(cMsg)
                 if '--Babel-Brain-Low-Error' in cMsg:
+                    self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                     bNoError=False  
         fieldWorkerProcess.join()
         while queue.empty() == False:
             cMsg=queue.get()
             print(cMsg,end='')
+            if 'CTS:' in cMsg:
+                self.logTelemetry.emit(cMsg)
             if '--Babel-Brain-Low-Error' in cMsg:
+                self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                 bNoError=False
         if bNoError:
             TEnd=time.time()
@@ -274,6 +286,7 @@ class RunAcousticSim(QObject):
             print("*"*40)
             print("*"*5+" DONE ultrasound simulation.")
             print("*"*40)
+            self.logTelemetry.emit("CTS:L2:S2: TOTAL TIME " + str(TotalTime))
             self._mainApp.UpdateComputationalTime('ultrasound',TotalTime)
             self.finished.emit()
         else:

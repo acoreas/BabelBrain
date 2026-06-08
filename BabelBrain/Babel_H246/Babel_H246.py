@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout
 from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread
 from PySide6.QtUiTools import QUiLoader
 
@@ -46,14 +46,12 @@ class H246(BabelBaseTx):
 
 
     def load_ui(self):
-        loader = QUiLoader()
-        #path = os.fspath(Path(__file__).resolve().parent / "form.ui")
-        path = os.path.join(resource_path(), "form.ui")
-        
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget =loader.load(ui_file, self)
-        ui_file.close()
+        from Babel_H246.H246Form import H246Form
+        self.Widget = H246Form(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
 
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
         self.Widget.TPODistanceSpinBox.setMinimum(self.Config['MinimalTPODistance']*1e3)
@@ -149,14 +147,18 @@ class H246(BabelBaseTx):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.UpdateAcResults)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
  
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+
             self.thread.start()
             self._MainApp.showClockDialog()
         else:
@@ -173,6 +175,7 @@ class RunAcousticSim(QObject):
 
     finished = Signal()
     endError = Signal()
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp):
         super(RunAcousticSim, self).__init__()
@@ -237,14 +240,20 @@ class RunAcousticSim(QObject):
             while queue.empty() == False:
                 cMsg=queue.get()
                 print(cMsg,end='')
+                if 'CTS:' in cMsg:
+                    self.logTelemetry.emit(cMsg)
                 if '--Babel-Brain-Low-Error' in cMsg:
-                    bNoError=False  
+                    self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
+                    bNoError=False 
         fieldWorkerProcess.join()
         while queue.empty() == False:
             cMsg=queue.get()
             print(cMsg,end='')
+            if 'CTS:' in cMsg:
+                self.logTelemetry.emit(cMsg)
             if '--Babel-Brain-Low-Error' in cMsg:
-                bNoError=False
+                self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
+                bNoError=False 
         if bNoError:
             TEnd=time.time()
             TotalTime = TEnd-T0
@@ -252,6 +261,7 @@ class RunAcousticSim(QObject):
             print("*"*40)
             print("*"*5+" DONE ultrasound simulation.")
             print("*"*40)
+            self.logTelemetry.emit("CTS:L2:S2: TOTAL TIME " + str(TotalTime))
             self._mainApp.UpdateComputationalTime('ultrasound',TotalTime)
             self.finished.emit()
         else:

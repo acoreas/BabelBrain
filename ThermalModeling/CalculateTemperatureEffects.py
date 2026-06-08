@@ -22,6 +22,7 @@ import sys
 import time
 import gc
 from scipy.ndimage import median_filter
+from linetimer import CodeTimer
 
 class InOutputWrapper(object):
     '''
@@ -359,37 +360,38 @@ def RunBHTECycles(nCurrent,
                 initT0=None
                 initDose=None
             
-        if type(InputPData) is str:
-            ResTemp,ResDose,MonitorSlice,Qarr,TemperaturePointsOn=BHTE(PMaps,
-                                                            MaterialMap,
-                                                            MaterialList,
-                                                            dx,
-                                                            TotalDurationSteps,
-                                                            nStepsOn,
-                                                            cy,
-                                                            nFactorMonitoring=nFactorMonitoring,
-                                                            dt=dt,
-                                                            DutyCycle=DutyCycle,
-                                                            Backend=Backend,
-                                                            initT0=initT0,
-                                                            initDose=initDose,
-                                                            MonitoringPointsMap=MonitoringPointsMap,
-                                                            stableTemp=stableTemp)
-        else:
-            ResTemp,ResDose,MonitorSlice,Qarr,TemperaturePointsOn=BHTEMultiplePressureFields(PMaps,
-                                                            MaterialMap,
-                                                            MaterialList,
-                                                            dx,
-                                                            TotalDurationSteps,
-                                                            nStepsOn,
-                                                            cy,
-                                                            nFactorMonitoring=nFactorMonitoring,
-                                                            dt=dt,
-                                                            Backend=Backend,
-                                                            initT0=initT0,
-                                                            initDose=initDose,
-                                                            MonitoringPointsMap=MonitoringPointsMap,
-                                                            stableTemp=stableTemp)
+        with CodeTimer("CTS:L3:S3: BHTE steps on",unit='s'):
+            if type(InputPData) is str:
+                ResTemp,ResDose,MonitorSlice,Qarr,TemperaturePointsOn=BHTE(PMaps,
+                                                                MaterialMap,
+                                                                MaterialList,
+                                                                dx,
+                                                                TotalDurationSteps,
+                                                                nStepsOn,
+                                                                cy,
+                                                                nFactorMonitoring=nFactorMonitoring,
+                                                                dt=dt,
+                                                                DutyCycle=DutyCycle,
+                                                                Backend=Backend,
+                                                                initT0=initT0,
+                                                                initDose=initDose,
+                                                                MonitoringPointsMap=MonitoringPointsMap,
+                                                                stableTemp=stableTemp)
+            else:
+                ResTemp,ResDose,MonitorSlice,Qarr,TemperaturePointsOn=BHTEMultiplePressureFields(PMaps,
+                                                                MaterialMap,
+                                                                MaterialList,
+                                                                dx,
+                                                                TotalDurationSteps,
+                                                                nStepsOn,
+                                                                cy,
+                                                                nFactorMonitoring=nFactorMonitoring,
+                                                                dt=dt,
+                                                                Backend=Backend,
+                                                                initT0=initT0,
+                                                                initDose=initDose,
+                                                                MonitoringPointsMap=MonitoringPointsMap,
+                                                                stableTemp=stableTemp)
 
         gc.collect(1)
 
@@ -400,21 +402,22 @@ def RunBHTECycles(nCurrent,
         
         #for cooling off, we do not need to do steering, just running with no energy
         if TotalDurationStepsOff>0:
-            FinalTemp,FinalDose,MonitorSliceOff,dum,TemperaturePointsOff=BHTE(p0,
-                                                            MaterialMap,
-                                                            MaterialList,
-                                                            dx,
-                                                            TotalDurationStepsOff,
-                                                            0,
-                                                            cy,
-                                                            nFactorMonitoring=nFactorMonitoring,
-                                                            dt=dt,
-                                                            DutyCycle=DutyCycle,
-                                                            Backend=Backend,
-                                                            initT0=ResTemp,
-                                                            initDose=ResDose,
-                                                            MonitoringPointsMap=MonitoringPointsMap,
-                                                            stableTemp=stableTemp) 
+            with CodeTimer("CTS:L3:S3: BHTE SP steps off",unit='s'):
+                FinalTemp,FinalDose,MonitorSliceOff,dum,TemperaturePointsOff=BHTE(p0,
+                                                                MaterialMap,
+                                                                MaterialList,
+                                                                dx,
+                                                                TotalDurationStepsOff,
+                                                                0,
+                                                                cy,
+                                                                nFactorMonitoring=nFactorMonitoring,
+                                                                dt=dt,
+                                                                DutyCycle=DutyCycle,
+                                                                Backend=Backend,
+                                                                initT0=ResTemp,
+                                                                initDose=ResDose,
+                                                                MonitoringPointsMap=MonitoringPointsMap,
+                                                                stableTemp=stableTemp) 
             if nCurrent==0:
                 TemperaturePoints=np.hstack((TemperaturePointsOn,TemperaturePointsOff))
             else:
@@ -432,7 +435,8 @@ def RunBHTECycles(nCurrent,
 
         if (nCurrent+1)%Repetitions == 0 and TotalDurationBetweenGroups>0.0:
             #we ran the extra time off pause
-            FinalTemp,FinalDose,MonitorSliceOff,dum,TemperaturePointsOff=BHTE(p0,
+            with CodeTimer("CTS:L3:S3: BHTE SP group off",unit='s'):
+                FinalTemp,FinalDose,MonitorSliceOff,dum,TemperaturePointsOff=BHTE(p0,
                                                             MaterialMap,
                                                             MaterialList,
                                                             dx,
@@ -951,8 +955,9 @@ def CalculateTemperatureEffects(InputPData,
         initT0=None
         initDose=None
 
-    if type(InputPData) is str:
-        ResTemp,ResDose,MonitorSlice,Qarr=BHTE(pAmp*PressureRatio,
+    with CodeTimer("CTS:L3:S3: BHTE init",unit='s'):
+        if type(InputPData) is str:
+            ResTemp,ResDose,MonitorSlice,Qarr=BHTE(pAmp*PressureRatio,
                                                         MaterialMap,
                                                         MaterialList,
                                                         (Input['x_vec'][1]-Input['x_vec'][0]),
@@ -966,24 +971,24 @@ def CalculateTemperatureEffects(InputPData,
                                                         stableTemp=BaselineTemperature,
                                                         initT0=initT0,
                                                         initDose=initDose)
-    else:
-        InputsBHTE=AllInputs.copy()
-        for n in range(len(InputPData)):
-            InputsBHTE[n,:,:,:]*=PressureRatio[n]
-        ResTemp,ResDose,MonitorSlice,Qarr=BHTEMultiplePressureFields(InputsBHTE,
-                                                      MaterialMap,
-                                                      MaterialList,
-                                                      (Input['x_vec'][1]-Input['x_vec'][0]),
-                                                      TotalDurationSteps,
-                                                      nStepsOnOffList,
-                                                      -1, #disabling slice monitor for memory saving
-                                                      nFactorMonitoring=nFactorMonitoring,
-                                                      dt=dt,
-                                                      Backend=Backend,
-                                                      stableTemp=BaselineTemperature,
-                                                      initT0=initT0,
-                                                      initDose=initDose)
-    gc.collect(1)
+        else:
+            InputsBHTE=AllInputs.copy()
+            for n in range(len(InputPData)):
+                InputsBHTE[n,:,:,:]*=PressureRatio[n]
+            ResTemp,ResDose,MonitorSlice,Qarr=BHTEMultiplePressureFields(InputsBHTE,
+                                                        MaterialMap,
+                                                        MaterialList,
+                                                        (Input['x_vec'][1]-Input['x_vec'][0]),
+                                                        TotalDurationSteps,
+                                                        nStepsOnOffList,
+                                                        -1, #disabling slice monitor for memory saving
+                                                        nFactorMonitoring=nFactorMonitoring,
+                                                        dt=dt,
+                                                        Backend=Backend,
+                                                        stableTemp=BaselineTemperature,
+                                                        initT0=initT0,
+                                                        initDose=initDose)
+        gc.collect(1)
 
     if len(prevSimulationResultsFile)>0:
         ResTemp=np.maximum(ResTemp,PreviousData['TempEndFUS'])
@@ -1124,7 +1129,7 @@ def CalculateTemperatureEffects(InputPData,
 
     TIC=ResTemp[SelSkull].max()
     
-    print('Max. Temp. Brain, Max Temp. Skin, Max Temp. Skull',TI,TIS,TIC);
+    print('Max. Temp. Brain, Max Temp. Skin, Max Temp. Skull',TI,TIS,TIC)
 
     CEMBrain=FinalDose[SelBrain].max()/60 # in min
     
@@ -1165,6 +1170,8 @@ def CalculateTemperatureEffects(InputPData,
         SaveDict['TimeProfileTarget']=np.hstack((PreviousData['TimeProfileTarget'],PreviousData['TimeProfileTarget'][-1]+dt+np.arange(TemperaturePoints.shape[1])*dt))
         SaveDict['TempProfileTarget']=np.hstack((PreviousData['TempProfileTarget'],TemperaturePoints[IndTarget,:]))
         SaveDict['TemperaturePoints']=np.hstack((PreviousData['TemperaturePoints'],TemperaturePoints))
+        
+    print(f'CTS:L4:S3 total duration (time, steps): ({SaveDict['TimeProfileTarget'][-1]},{TemperaturePoints.shape[1]})')
         
     SaveDict['MI']=MI
     SaveDict['x_vec']=xf*1e3

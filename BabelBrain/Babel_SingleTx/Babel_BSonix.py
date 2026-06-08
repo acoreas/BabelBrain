@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QVBoxLayout
 from PySide6.QtCore import QFile,Slot,QThread
 from PySide6.QtUiTools import QUiLoader
 
@@ -39,16 +39,16 @@ def DistanceOutPlaneToFocus(FocalLength,Diameter):
     return np.sqrt(FocalLength**2-(Diameter/2)**2)
 
 class BSonix(SingleTx):
-    def __init__(self,parent=None,MainApp=None,formfile='formBx.ui'):
-        super(BSonix, self).__init__(parent,MainApp,formfile)       
+    def __init__(self,parent=None,MainApp=None):
+        super(BSonix, self).__init__(parent,MainApp)       
 
-    def load_ui(self,formfile):
-        loader = QUiLoader()
-        path = os.path.join(resource_path(), formfile)
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget =loader.load(ui_file, self)
-        ui_file.close()
+    def load_ui(self):
+        from Babel_SingleTx.SingleTxForm import BSonixForm
+        self.Widget = BSonixForm(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
 
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
         self.Widget.CalculateAcField.clicked.connect(self.RunSimulation)
@@ -135,14 +135,18 @@ class BSonix(SingleTx):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.DoneAcSim)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
  
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+
             self.thread.start()
             self._MainApp.showClockDialog()
         else:

@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import (
     FigureCanvas,NavigationToolbar2QT)
+from GUIComponents.AppStyle import style_nav_toolbar
 
 import os
 import sys
@@ -99,12 +100,12 @@ class Babel_Thermal(QWidget):
         self._LastTMap=-1
 
     def load_ui(self):
-        loader = QUiLoader()
-        path = os.path.join(resource_path(), "form.ui")
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget = loader.load(ui_file, self)
-        ui_file.close()
+        from Babel_Thermal.ThermalForm import ThermalForm
+        self.Widget = ThermalForm(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
 
         self.Widget.SelectProfile.clicked.connect(self.SelectProfile)
         self.Widget.SelectProfile.setStyleSheet("color: #2db52d")   # bright green, readable on light & dark
@@ -264,13 +265,18 @@ class Babel_Thermal(QWidget):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.UpdateThermalResults)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
+
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+ 
             self.thread.start()
             self._MainApp.Widget.tabWidget.setEnabled(False)
             self._MainApp.showClockDialog()
@@ -611,7 +617,7 @@ class Babel_Thermal(QWidget):
                     self._ListMarkers=[]
                     self._figIntThermalFields=Figure(figsize=(14, 12))
                     self.static_canvas = FigureCanvas(self._figIntThermalFields)
-                    toolbar=NavigationToolbar2QT(self.static_canvas,self)
+                    toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
                     self._layout.addWidget(toolbar)
                     self._layout.addWidget(self.static_canvas)
                     static_ax1,static_ax2 = self.static_canvas.figure.subplots(1,2)
@@ -645,7 +651,7 @@ class Babel_Thermal(QWidget):
                 else:
                     self._figIntThermalFields=Figure(figsize=(14, 12))
                     self.static_canvas = FigureCanvas(self._figIntThermalFields)
-                    toolbar=NavigationToolbar2QT(self.static_canvas,self)
+                    toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
                     self._layout.addWidget(toolbar)
                     self._layout.addWidget(self.static_canvas)
                     static_ax1 = self.static_canvas.figure.subplots(1,1)
@@ -863,6 +869,7 @@ class RunThermalSim(QObject):
 
     finished = Signal()
     endError = Signal()
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp):
          super(RunThermalSim, self).__init__()
@@ -911,14 +918,19 @@ class RunThermalSim(QObject):
             while queue.empty() == False:
                 cMsg=queue.get()
                 print(cMsg,end='')
+                if 'CTS:' in cMsg:
+                    self.logTelemetry.emit(cMsg)
                 if '--Babel-Brain-Low-Error' in cMsg:
+                    self.logTelemetry.emit("CTS:L1:S3: "+cMsg)
                     bNoError=False  
         fieldWorkerProcess.join()
         while queue.empty() == False:
             cMsg=queue.get()
-            print(cMsg,end='')
+            if 'CTS:' in cMsg:
+                self.logTelemetry.emit(cMsg)
             if '--Babel-Brain-Low-Error' in cMsg:
-                bNoError=False
+                self.logTelemetry.emit("CTS:L1:S3: "+cMsg)
+                bNoError=False 
         if bNoError:
             TEnd=time.time()
             TotalTime = TEnd-T0
@@ -926,6 +938,7 @@ class RunThermalSim(QObject):
             print("*"*40)
             print("*"*5+" DONE thermal simulation.")
             print("*"*40)
+            self.logTelemetry.emit("CTS:L2:S3: TOTAL TIME " + str(TotalTime))
             self._mainApp.UpdateComputationalTime('thermal',TotalTime)
             self.finished.emit()
         else:

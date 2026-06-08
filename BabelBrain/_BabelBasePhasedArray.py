@@ -35,6 +35,7 @@ import time
 import yaml
 from BabelViscoFDTD.H5pySimple import ReadFromH5py, SaveToH5py
 from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from GUIComponents.AppStyle import style_nav_toolbar
 
 from CalculateFieldProcess import CalculateFieldProcess
 import platform 
@@ -43,22 +44,34 @@ from _BabelBaseTx import BabelBaseTx
 
 
 class BabelBasePhaseArray(BabelBaseTx):
-    def __init__(self,parent=None,MainApp=None,formfile=None):
+    def __init__(self,parent=None,MainApp=None,formtype=None):
         super().__init__(parent)
         self.static_canvas=None
         self._MainApp=MainApp
         self._MultiPoint = None #if None, the default is to run one single focal point
         self.DefaultConfig()
-        self.load_ui(formfile)
+        self.load_ui(formtype)
 
 
-    def load_ui(self,formfile):
-        loader = QUiLoader()
-        path =  formfile
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget =loader.load(ui_file, self)
-        ui_file.close()
+    def load_ui(self,formtype):
+        # the concrete form class is
+        # passed in via `formtype`, which is now either a class (preferred)
+        # or a legacy path that selects the matching form class by suffix.
+        if isinstance(formtype, type):
+            form_cls = formtype
+        else:
+            # Backwards compat: map old .ui paths to the new form classes.
+            if "Babel_DomeTx" in str(formtype):
+                from Babel_DomeTx.DomeTxForm import DomeTxForm as form_cls
+            elif "Babel_H317" in str(formtype):
+                from Babel_H317.H317Form import H317Form as form_cls
+            else:
+                raise ValueError(f"No programmatic form mapping for {formtype}")
+        self.Widget = form_cls(self)
+
+        _l = QVBoxLayout(self)
+        _l.setContentsMargins(0, 0, 0, 0)
+        _l.addWidget(self.Widget)
 
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
 
@@ -189,18 +202,24 @@ class BabelBasePhaseArray(BabelBaseTx):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.EndSimulation)
+            self.worker.finished.connect(self._MainApp.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
 
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self._MainApp.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
+
+            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+
             self.thread.start()
             self._MainApp.showClockDialog()
         else:
             self.UpdateAcResults()
 
+        
     def GetExport(self):
         Export=super().GetExport()
         Export['Refocusing']=self.Widget.RefocusingcheckBox.isChecked()
@@ -429,15 +448,22 @@ class BabelBasePhaseArray(BabelBaseTx):
                 self._layout = QVBoxLayout(self.Widget.AcField_plot1)
 
             self.static_canvas = FigureCanvas(self._figAcField)
-            toolbar=NavigationToolbar2QT(self.static_canvas,self)
+            toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
             self._layout.addWidget(toolbar)
             self._layout.addWidget(self.static_canvas)
-            static_ax1,static_ax2 = self.static_canvas.figure.subplots(1,2)
+            # Each plot box is centered on its scrollbar (left col x=0.25, right
+            # col x=0.75). A dedicated colorbar axis keeps the plot itself
+            # centered (plt.colorbar(ax=...) would shrink/shift the plot).
+            fig=self.static_canvas.figure
+            static_ax1 = fig.add_axes([0.10, 0.12, 0.30, 0.80])
+            cax1       = fig.add_axes([0.43, 0.12, 0.015, 0.80])
+            static_ax2 = fig.add_axes([0.60, 0.12, 0.30, 0.80])
+            cax2       = fig.add_axes([0.93, 0.12, 0.015, 0.80])
             self._static_ax1 = static_ax1
             self._static_ax2 = static_ax2
 
             self._imContourf1=static_ax1.contourf(self._XX,self._ZZX,sliceXZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
-            h=plt.colorbar(self._imContourf1,ax=static_ax1)
+            h=plt.colorbar(self._imContourf1,cax=cax1)
             h.set_label('$I_{\mathrm{SPPA}}$ (normalized)')
             if not self._MainApp.Config['bForceHomogenousMedium']:
                 self._contour1 = static_ax1.contour(self._XX,self._ZZX,self._Skull['MaterialMap'][:,SelY,:].T,[0,1,2], colors ='k',linestyles = ':')
@@ -452,7 +478,7 @@ class BabelBasePhaseArray(BabelBaseTx):
             self._marker1,=static_ax1.plot(0,self._DistanceToTarget,'+k',markersize=18)
                 
             self._imContourf2=static_ax2.contourf(self._YY,self._ZZY,sliceYZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
-            h=plt.colorbar(self._imContourf1,ax=static_ax2)
+            h=plt.colorbar(self._imContourf1,cax=cax2)
             h.set_label('$I_{\mathrm{SPPA}}$ (normalized)')
             if not self._MainApp.Config['bForceHomogenousMedium']:
                 self._contour2 = static_ax2.contour(self._YY,self._ZZY,self._Skull['MaterialMap'][SelX,:,:].T,[0,1,2], colors ='k',linestyles = ':')
@@ -514,6 +540,7 @@ class RunAcousticSim(QObject):
 
     finished = Signal(object)
     endError = Signal()
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp,bDryRun=False):
         super().__init__()
@@ -599,7 +626,10 @@ class RunAcousticSim(QObject):
                     cMsg=queue.get()
                     if type(cMsg) is str:
                         print(cMsg,end='')
+                        if 'CTS:' in cMsg:
+                            self.logTelemetry.emit(cMsg)
                         if '--Babel-Brain-Low-Error' in cMsg:
+                            self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                             bNoError=False
                     else:
                         assert(type(cMsg) is dict)
@@ -609,7 +639,10 @@ class RunAcousticSim(QObject):
                 cMsg=queue.get()
                 if type(cMsg) is str:
                     print(cMsg,end='')
+                    if 'CTS:' in cMsg:
+                        self.logTelemetry.emit(cMsg)
                     if '--Babel-Brain-Low-Error' in cMsg:
+                        self.logTelemetry.emit("CTS:L1:S2: "+cMsg)
                         bNoError=False
                 else:
                     assert(type(cMsg) is dict)
@@ -621,6 +654,7 @@ class RunAcousticSim(QObject):
                 print("*"*40)
                 print("*"*5+" DONE ultrasound simulation.")
                 print("*"*40)
+                self.logTelemetry.emit("CTS:L2:S2: TOTAL TIME " + str(TotalTime))
                 self._mainApp.UpdateComputationalTime('ultrasound',TotalTime)
                 self.finished.emit(OutFiles)
             else:

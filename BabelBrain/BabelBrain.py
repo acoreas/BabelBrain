@@ -20,6 +20,8 @@ import sys
 import time
 from multiprocessing import Process, Queue
 from pathlib import Path
+import psutil
+import cpuinfo
 
 sys.path.append(os.path.abspath('../'))
 sys.path.append(os.path.abspath('./'))
@@ -50,6 +52,7 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 from matplotlib.backends.backend_qtagg import FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from GUIComponents.AppStyle import style_nav_toolbar
 from nibabel import processing
 from superqt import QLabeledDoubleRangeSlider
 
@@ -69,6 +72,9 @@ from SelFiles.SelFiles import SelFiles,ValidThermalProfile
 from Options.Options import AdvancedOptions, OptionalParams
 from ClockDialog import ClockDialog
 from GUIComponents.nifti_viewer import NiftiViewerWindow
+
+from Telemetry.Telemetry import send_telemetry
+from datetime import datetime, timezone
 
 
 multiprocessing.freeze_support()
@@ -169,6 +175,10 @@ GetSmallestSOS=None
 
 _LastSelConfig=str(Path.home())+os.sep+os.path.join('.config','BabelBrain','lastselection.yaml')
 
+_LocationInstallID = str(Path.home())+os.sep+os.path.join('.config','BabelBrain','installation.id')
+
+_date_session = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
 def GetLatestSelection():
     res=None
     if os.path.isfile(_LastSelConfig):
@@ -180,6 +190,39 @@ def GetLatestSelection():
                 print(e)
                 res=None
     return res
+
+def SaveTelemetryLevelToConfig(level):
+    '''
+    Persist the telemetry level into the user's lastselection.yaml so the
+    first-launch consent dialog is not shown again. Used before the BabelBrain
+    main widget is constructed (which is what normally owns SaveLatestSelection).
+    '''
+    try:
+        os.makedirs(os.path.split(_LastSelConfig)[0], exist_ok=True)
+    except BaseException as e:
+        print('Unable to save telemetry level')
+        print(e)
+        return
+    cfg = GetLatestSelection() or {}
+    cfg['TelemetryLevel'] = int(level)
+    try:
+        with open(_LastSelConfig, 'w') as f:
+            yaml.safe_dump(cfg, f)
+    except BaseException as e:
+        print('Unable to save telemetry level')
+        print(e)
+
+def _styled_dialog_parent():
+    """Return a stylesheet-carrying widget so QMessageBoxes raised from
+    module-level helpers (no `self` in scope) still inherit the compact app
+    font. The programmatic forms (MainForm, Tx panels) carry the stylesheet
+    under objectName "Widget"; fall back to the active window itself."""
+    app = QApplication.instance()
+    win = app.activeWindow() if app else None
+    if win is None:
+        return None
+    return win.findChild(QWidget, "Widget") or win
+
 
 def GetInputFromBrainsight():
     '''
@@ -227,8 +270,8 @@ def GetInputFromBrainsight():
             # EndWithError("Version 13 of export trajectory not supported.\nEnding BabelBrain execution")
             pass
         else:
-            if header['Version']!='14':
-                msgBox = QMessageBox()
+            if header['Version'] not in ['14','15']:
+                msgBox = QMessageBox(_styled_dialog_parent())
                 msgBox.setIcon(QMessageBox.Warning)
                 msgBox.setText("Version of export trajectory not officially supported.\nBabelBrain will continue but issues may occur")
                 msgBox.exec()
@@ -307,7 +350,7 @@ def EndWithError(msg):
     msg : str
         The error message to display.
     '''
-    msgBox = QMessageBox()
+    msgBox = QMessageBox(_styled_dialog_parent())
     msgBox.setIcon(QMessageBox.Critical)
     msgBox.setText(msg)
     msgBox.exec()
@@ -500,12 +543,31 @@ class BabelBrain(QWidget):
                             'Calculation time thermal':0.0}
         self._NiftiCT = None
         self._NiftiAirMask = None
+
+        self._TelmetryMsgs=[]
+        self._TimeStart = time.time()
+
+        self.LogTelemetry('CTS:L1: BabelBrain started')
+        self.LogTelemetry('CTS:L1: OS: '+ platform.platform())
+
+        mem = psutil.virtual_memory()
+        info = cpuinfo.get_cpu_info()
+        print(f'CPU: {info['brand_raw']}')
+        print(f'Total memory:{mem.total / 2**30:.2f} GB')
+        self.LogTelemetry(f'CTS:L1: CPU: {info['brand_raw']}')
+        self.LogTelemetry(f'CTS:L1: Memory: {mem.total / 2**30:.2f} GB')
+        self.LogTelemetry(f'CTS:L1: GPU: {Backend} {ComputingDevice}')
+        self.LogTelemetry(f'CTS:L4: Device: {self.Config['TxSystem']}')
+        self.SendTelemetry()
+        
         
     def showEvent(self, event):
         super().showEvent(event)
         self.centerOnScreen()
 
     def closeEvent(self, event):
+        self.LogTelemetry('CTS:L1: BabelBrain closing')
+        self.SendTelemetry(waittocomplete=True)
         if hasattr(self,'_vtk_visualization'):
             self._vtk_visualization.close()
         super().closeEvent(event)  # let the default close logic run
@@ -570,13 +632,17 @@ class BabelBrain(QWidget):
 
     def load_ui(self):
         global GetSmallestSOS
-        loader = QUiLoader()
-        #path = os.fspath(Path(__file__).resolve().parent / "form.ui")
-        path = os.path.join(resource_path(), "form.ui")
-        ui_file = QFile(path)
-        ui_file.open(QFile.ReadOnly)
-        self.Widget = loader.load(ui_file, self)
-        ui_file.close()
+
+        # Top-level form is now built programmatically — see MainForm.py.
+        # Widget attribute names (tabWidget, IDLabel, CTZTETabs, USMask, …)
+        # are preserved so the rest of this file references them unchanged.
+        from MainForm import BabelBrainMainForm
+        self.Widget = BabelBrainMainForm(self)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.addWidget(self.Widget)
+
         ## THIS WILL BE LOADED DYNAMICALLY in function of the active Tx
         import BabelDatasetPreps as DataPreps
 
@@ -638,9 +704,13 @@ class BabelBrain(QWidget):
         slider.setValue((0.1, 0.6))
         ZTE=self.Widget.CTZTETabs.widget(0)
         LayRange=ZTE.findChildren(QVBoxLayout)[0]
-        LayRange.addWidget(slider)
+        # Insert before the layout's trailing stretch so the slider aligns to the
+        # top of the tab (like the CT tab's HU threshold), not the bottom.
+        LayRange.insertWidget(LayRange.count()-1, slider)
         self.Widget.ZTERangeSlider=slider
-        self.Widget.setStyleSheet("QTabBar::tab::disabled {width: 0; height: 0; margin: 0; padding: 0; border: none;} ")
+        # NB: do not call self.Widget.setStyleSheet() here — it would replace
+        # (not extend) the compact _FORM_QSS applied in BabelBrainMainForm,
+        # which already includes the QTabBar::tab::disabled rule.
         print("self.Config['CTType']",self.Config['CTType'])
         if self.Config['bUseCT'] == False:
             self.Widget.CTZTETabs.hide()
@@ -758,7 +828,7 @@ class BabelBrain(QWidget):
         bValid,msg = ValidThermalProfile(fThermalProfile)
         if not bValid:
             print('bValid,msg',bValid,msg)
-            msgBox = QMessageBox()
+            msgBox = QMessageBox(self.Widget)
             msgBox.setText("Please indicate valid entries in the profile")
             msgBox.setDetailedText(msg)
             msgBox.exec()
@@ -834,7 +904,7 @@ class BabelBrain(QWidget):
             try:
                 os.makedirs(basedir)
             except:
-                msgBox = QMessageBox()
+                msgBox = QMessageBox(self.Widget)
                 msgBox.setIcon(QMessageBox.Critical)
                 msgBox.setText("Unable to create directory to save results at:\n" + basedir)
                 msgBox.exec()
@@ -850,7 +920,10 @@ class BabelBrain(QWidget):
         self._T1W_resampled_fname=self._outnameMask.split('BabelViscoInput.nii.gz')[0]+'T1W_Resampled.nii.gz'
         bCalcMask=False
         if os.path.isfile(self._outnameMask) and os.path.isfile(self._T1W_resampled_fname):
-            ret = QMessageBox.question(self,'', "Mask file already exists.\nDo you want to recalculate?\nSelect No to reload", QMessageBox.Yes | QMessageBox.No)
+            # Parent to self.Widget (the styled MainForm) so the dialog inherits
+            # the compact _FORM_QSS; self is the top-level app and carries no
+            # stylesheet of its own.
+            ret = QMessageBox.question(self.Widget,'', "Mask file already exists.\nDo you want to recalculate?\nSelect No to reload", QMessageBox.Yes | QMessageBox.No)
 
             if ret == QMessageBox.Yes:
                 bCalcMask=True
@@ -864,13 +937,18 @@ class BabelBrain(QWidget):
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.VerifyResults)
+            self.worker.finished.connect(self.SendTelemetry)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
+
             
             self.worker.endError.connect(self.NotifyError)
+            self.worker.endError.connect(self.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
             self.worker.endError.connect(self.worker.deleteLater)
+
+            self.worker.logTelemetry.connect(self.LogTelemetry)
 
             self.thread.start()
             self.Widget.tabWidget.setEnabled(False)
@@ -878,6 +956,7 @@ class BabelBrain(QWidget):
 
         else:
             self.UpdateMask()
+
 
     #this will modify the coordinates of the trajectory
     def ExportTrajectory(self,CorX=0.0,CorY=0.0,CorZ=0.0):
@@ -935,7 +1014,7 @@ class BabelBrain(QWidget):
         self.SetErrorDomainCode()
         self.hideClockDialog()
         if 'BABEL_PYTEST' not in os.environ:
-            msgBox = QMessageBox()
+            msgBox = QMessageBox(self.Widget)
             msgBox.setIcon(QMessageBox.Critical)
             msgBox.setText("There was an error in execution -\nconsult log window for details")
             msgBox.exec()
@@ -1030,7 +1109,7 @@ class BabelBrain(QWidget):
 
         self.static_canvas = FigureCanvas(self._figMasks)
         
-        toolbar=NavigationToolbar2QT(self.static_canvas,self)
+        toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
         self._layout.addWidget(toolbar)
         self._layout.addWidget(self.static_canvas)
 
@@ -1344,18 +1423,37 @@ class BabelBrain(QWidget):
                 kargs['bDensity']=True
         kargs['OptimizedWeightsFile']=self.Config['TxOptimizedWeights'][self.Config['TxSystem']]
         return kargs
+    
+    def LogTelemetry(self,entry):
+        msgLevel = int(entry.split(':')[1][1])
+        if self.Config['TelemetryLevel'] >= msgLevel:
+            self._TelmetryMsgs.append({'time':time.time()-self._TimeStart,'event':entry})
+
+    def SendTelemetry(self,waittocomplete=False):
+        #we will break in segments of 
+        send_telemetry('BabelBrain log',
+                       idpath=_LocationInstallID,
+                       session_date=_date_session,
+                       APP_VERSION=self.Config['version'].rstrip(),
+                       data=self._TelmetryMsgs,
+                       waittocomplete=waittocomplete)
+        self._TelmetryMsgs=[] #we clean the list
+        
 
 def get_color_at(widget, x,y):
     pixmap = QPixmap(widget.size())
     widget.render(pixmap)
     return pixmap.toImage().pixelColor(x,y).getRgb()
-        
+
+
 class RunMaskGeneration(QObject):
     '''
     Worker class for running mask generation in a separate process.
     '''
     finished = Signal(object)
     endError = Signal()
+
+    logTelemetry = Signal(str)
 
     def __init__(self,mainApp):
         super(RunMaskGeneration, self).__init__()
@@ -1390,6 +1488,7 @@ class RunMaskGeneration(QObject):
 
         BasePPW=self._mainApp._BasePPW
         SpatialStep=np.round(SmallestSoS/Frequency/BasePPW*1e3,3) #step of mask to reconstruct , mm
+        self.logTelemetry.emit(f"CTS:L3:S1: Frequency={Frequency} PPW={BasePPW}")
         print("Frequency, SmallestSoS, BasePPW,SpatialStep",Frequency, SmallestSoS, BasePPW,SpatialStep)
 
         prefix=self._mainApp._prefix
@@ -1430,7 +1529,8 @@ class RunMaskGeneration(QObject):
                                                     'bForceNoAbsorptionSkullScalp',
                                                     'TxOptimizedWeights',
                                                     'PlanTUSRoot',
-                                                     'ConnectomeRoot']:
+                                                    'ConnectomeRoot',
+                                                    'TelemetryLevel']:
                 return True
             else:
                 return False
@@ -1493,22 +1593,32 @@ class RunMaskGeneration(QObject):
             time.sleep(0.1)
             while queue.empty() == False:
                 cMsg=queue.get()
-                if type(cMsg) is dict:
-                    output_files=cMsg
-                else:
+                if type(cMsg) is str:
                     print(cMsg,end='')
+                    if 'CTS:' in cMsg:
+                        self.logTelemetry.emit(cMsg)
                     if '--Babel-Brain-Low-Error' in cMsg:
                         bNoError=False
+                        self.logTelemetry.emit("CTS:L2:S1: "+cMsg)
+                elif type(cMsg) is dict:
+                    output_files=cMsg
+                else:
+                    print('WARNING: Unknown type of message from thread:', type(cMsg))
 
         maskWorkerProcess.join()
         while queue.empty() == False:
             cMsg=queue.get()
-            if type(cMsg) is dict:
-                output_files=cMsg
-            else:
+            if type(cMsg) is str:
                 print(cMsg,end='')
+                if 'CTS:' in cMsg:
+                    self.logTelemetry.emit(cMsg)
                 if '--Babel-Brain-Low-Error' in cMsg:
                     bNoError=False
+                    self.logTelemetry.emit("CTS:L2:S1: "+cMsg)
+            elif type(cMsg) is dict:
+                output_files=cMsg
+            else:
+                print('WARNING: Unknown type of message from thread:', type(cMsg))
         if bNoError:
             TEnd=time.time()
             TotalTime = TEnd-T0
@@ -1516,6 +1626,7 @@ class RunMaskGeneration(QObject):
             print("*"*40)
             print("*"*5+" DONE calculating mask.")
             print("*"*40)
+            self.logTelemetry.emit("CTS:L2:S1: TOTAL TIME " + str(TotalTime))
             self._mainApp.UpdateComputationalTime('domain',TotalTime)
             self.finished.emit(output_files)
         else:
@@ -1578,10 +1689,26 @@ def main():
         pass
 
     selwidget = SelFiles()
-    
+
     prevConfig=GetLatestSelection()
-    
+
+    # First-launch telemetry consent. Shown before any input dialog so the
+    # user's choice is recorded once and reused for every subsequent run.
+    if prevConfig is None or 'TelemetryLevel' not in prevConfig:
+        from Telemetry.TelemetryConsentDialog import TelemetryConsentDialog
+        consent = TelemetryConsentDialog()
+        consent.exec()
+        SaveTelemetryLevelToConfig(consent.selected_level())
+        if prevConfig is None:
+            prevConfig = {}
+        prevConfig['TelemetryLevel'] = consent.selected_level()
+
+    bFullPrevConfig=False
+
     if prevConfig is not None:
+        bFullPrevConfig = 'simbnibs_path' in prevConfig
+
+    if prevConfig is not None and bFullPrevConfig:
         selwidget.ui.SimbNIBSlineEdit.setText(prevConfig['simbnibs_path'])
         selwidget.ui.T1WlineEdit.setText(prevConfig['T1W'])
         selwidget.ui.TrajectorylineEdit.setText(prevConfig['Mat4Trajectory'])
