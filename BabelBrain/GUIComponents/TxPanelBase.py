@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 # ── Accent palette (kept in sync with MainForm.py / nifti_viewer.py) ──────
 from GUIComponents.AppStyle import (
     button_border_color, scrollbar_handle_color, disabled_text_color,
-    scrollbar_track_color, apply_native_spinbox_style,
+    scrollbar_track_color, apply_native_spinbox_style, disabled_input_qss,
 )
 ACCENT     = "#00c8ff"
 LABEL_BLUE = "#166eff"
@@ -46,6 +46,7 @@ def _panel_qss(widget=None):
     _handle = scrollbar_handle_color(widget)
     _disabled = disabled_text_color(widget)
     _track = scrollbar_track_color(widget)
+    _dis_inputs = disabled_input_qss(widget)
     return f"""
 QLabel {{ font-size: 11px; }}
 
@@ -82,6 +83,7 @@ QScrollBar::handle:horizontal:hover {{ background: {ACCENT}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 QFrame#panelLeftFrame {{ border: none; }}
+{_dis_inputs}
 """
 
 
@@ -245,6 +247,84 @@ class TxPanelBase(QWidget):
         layout.setSpacing(4)
         return frame, layout
 
+    def _build_mech_and_actions(self, lay, *,
+                                xy_mech=(-5.0, 5.0),
+                                skin_distance=None,
+                                z_mechanic=None,
+                                tissue_warning="Tissue layers\nwill be removed!"):
+        """Build the shared bottom of a Step-2 left panel — the part every
+        transducer form has in common: X/Y mechanical adjustments, a third
+        control, the max-depth field, the two Calculate buttons, the
+        'Distance target to FLHM' readout and an optional tissue-removal warning.
+
+        Per-transducer differences are passed in:
+          * ``xy_mech``        — (min, max) for the X/Y mechanical spin boxes.
+          * exactly one of:
+              ``skin_distance``  — (min, max) → ``SkinDistanceSpinBox``
+                                    ('Distance Tx outplane to skin').
+              ``z_mechanic``     — (min, max) → ``ZMechanicSpinBox`` +
+                                    ``ZMechaniclabel`` ('Mechanical adj. Z').
+          * ``tissue_warning`` — warning text, or ``None`` to omit it.
+
+        Adds the trailing stretch and leaves the frame to the caller to return.
+        Widget attribute names are preserved so the controller classes keep
+        working unchanged.
+        """
+        xlo, xhi = xy_mech
+        self.XMechanicSpinBox = make_dspin(
+            "XMechanicSpinBox", minimum=xlo, maximum=xhi)
+        lay.addLayout(form_row("Mechanical adj. X (mm)", self.XMechanicSpinBox))
+
+        self.YMechanicSpinBox = make_dspin(
+            "YMechanicSpinBox", minimum=xlo, maximum=xhi)
+        lay.addLayout(form_row("Mechanical adj. Y (mm)", self.YMechanicSpinBox))
+
+        if z_mechanic is not None:
+            zlo, zhi = z_mechanic
+            self.ZMechaniclabel = make_label("Mechanical adj. Z (mm)",
+                                             name="ZMechaniclabel")
+            self.ZMechanicSpinBox = make_dspin(
+                "ZMechanicSpinBox", minimum=zlo, maximum=zhi)
+            sel=[self.ZMechaniclabel,self.ZMechanicSpinBox]
+        else:
+            slo, shi = skin_distance
+            self.SkinDistanceSpinBox = make_dspin(
+                "SkinDistanceSpinBox", minimum=slo, maximum=shi)
+            sel=[make_label("Distance Tx outplane\nto skin (mm)"),self.SkinDistanceSpinBox]
+
+        if tissue_warning is not None:
+            self.LabelTissueRemoved = make_label(
+                tissue_warning, name="LabelTissueRemoved")
+            self.LabelTissueRemoved.setStyleSheet("color: #e03030;")
+            sel.insert(1,self.LabelTissueRemoved)
+            
+        lay.addLayout(form_row(*sel))
+
+        self.MaxDepthSpinBox = make_dspin(
+            "MaxDepthSpinBox", value=40.0, minimum=20.0, maximum=100.0,
+            decimals=1, step=1.0)
+        lay.addLayout(form_row(
+            make_label("Max. depth beyond\ntarget (mm)"), self.MaxDepthSpinBox))
+
+        lay.addSpacing(8)
+
+        self.CalculateAcField = make_button(
+            "CalculateAcField", "Calculate Fields", bold=True, min_height=40)
+        lay.addWidget(self.CalculateAcField)
+
+        self.CalculateMechAdj = make_button(
+            "CalculateMechAdj", "Calculate Mechanical Adjustments",
+            bold=True, min_height=40)
+        lay.addWidget(self.CalculateMechAdj)
+
+        self.DistanceTargetLabel = make_label(
+            "-", name="DistanceTargetLabel", bold=True, color=LABEL_BLUE)
+        lay.addLayout(form_row(
+            make_label("Distance target to FLHM\ncenter [X, Y, Z] (mm):"),
+            self.DistanceTargetLabel))
+
+        lay.addStretch(1)
+
     def _build_plot_host(self):
         self.AcField_plot1 = QWidget()
         self.AcField_plot1.setObjectName("AcField_plot1")
@@ -273,8 +353,29 @@ class TxPanelBase(QWidget):
         self.ShowWaterResultscheckBox.setEnabled(False)
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        # row.setSpacing(4)
         row.addWidget(self.HideMarkscheckBox)
         row.addStretch(1)
         row.addWidget(self.ShowWaterResultscheckBox)
+
+        if self.parent()._MainApp.Config['CTType']>0:
+            self.SDRText = make_label(
+                "SDR:", name="SDRText")
+            self.SDRLabel = make_label(
+                "-", name="SDRLabel", bold=True, color=LABEL_BLUE)
+            # Reserve a fixed slot for the SDR value so the row never reflows: a
+            # minimum width that fits the 4-char "%0.2f" value (so it doesn't grow
+            # when the text is filled in), plus retain-size-when-hidden so the slot
+            # is held even while the labels are invisible. Together this keeps the
+            # checkboxes at a fixed position whether or not the SDR labels show.
+            self.SDRLabel.setMinimumWidth(40)
+            for _w in (self.SDRText, self.SDRLabel):
+                _sp = _w.sizePolicy()
+                _sp.setRetainSizeWhenHidden(True)
+                _w.setSizePolicy(_sp)
+            row.addStretch(1)
+            row.addWidget(self.SDRText)
+            row.addWidget(self.SDRLabel)
+
+
         return row
