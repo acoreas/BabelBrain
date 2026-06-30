@@ -51,15 +51,15 @@ class SingleTx(BabelBaseTx):
 
 
     def load_ui(self):
+        self._setupTrajectoryTabs()
+
+    def _CreateForm(self):
         from Babel_SingleTx.SingleTxForm import SingleTxForm
-        self.Widget = SingleTxForm(self)
+        return SingleTxForm(self)
 
-        _l = QVBoxLayout(self)
-        _l.setContentsMargins(0, 0, 0, 0)
-        _l.addWidget(self.Widget)
-
+    def _WirePanel(self):
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
-        self.Widget.CalculateAcField.clicked.connect(self.RunSimulation)
+        
         self.Widget.SkinDistanceSpinBox.valueChanged.connect(self.UpdateTxInfo)
         self.Widget.DiameterSpinBox.valueChanged.connect(self.UpdateTxInfo)
         self.Widget.FocalLengthSpinBox.valueChanged.connect(self.UpdateTxInfo)
@@ -76,14 +76,8 @@ class SingleTx(BabelBaseTx):
         self.Config=config
 
     def NotifyGeneratedMask(self):
-        VoxelSize=self._MainApp._MaskNib.header.get_zooms()[0]
-        TargetLocation =np.array(np.where(self._MainApp._FinalMask==5.0)).flatten()
-        LineOfSight=self._MainApp._FinalMask[TargetLocation[0],TargetLocation[1],:]
-        StartSkin=np.where(LineOfSight>0)[0].min()
-        DistanceFromSkin = (TargetLocation[2]-StartSkin)*VoxelSize
-
-        self.Widget.DistanceSkinLabel.setText('%3.2f'%(DistanceFromSkin))
-        self.Widget.DistanceSkinLabel.setProperty('UserData',DistanceFromSkin)
+        self._SyncActiveTrajectoryFromMainApp()
+        self.CalculateDistanceFromSkin()
 
         self.UpdateLimits()
 
@@ -130,66 +124,41 @@ class SingleTx(BabelBaseTx):
 
       
     @Slot()
-    def RunSimulation(self):
-        extrasuffix=self.GetExtraSuffixAcFields()
-        self._FullSolName=self._MainApp._prefix_path+extrasuffix+'DataForSim.h5' 
-        self._WaterSolName=self._MainApp._prefix_path+extrasuffix+'Water_DataForSim.h5'
-        FocalLength = self.Widget.FocalLengthSpinBox.value()
-        Diameter = self.Widget.DiameterSpinBox.value()
+    def _ResolveSimulationFilenames(self):
+        self._extrasuffix=self.GetExtraSuffixAcFields()
+        self._FullSolName=self._MainApp._prefix_path[self._TrajectoryNumber]+self._extrasuffix+'DataForSim.h5'
+        self._WaterSolName=self._MainApp._prefix_path[self._TrajectoryNumber]+self._extrasuffix+'Water_DataForSim.h5'
+        self._FocalLength = self.Widget.FocalLengthSpinBox.value()
+        self._Diameter = self.Widget.DiameterSpinBox.value()
 
-        bCalcFields=False
-        if os.path.isfile(self._FullSolName) and os.path.isfile(self._WaterSolName):
-            Skull=ReadFromH5py(self._FullSolName)
-            
-            DistanceSkin = self._ZMaxSkin - Skull['TxMechanicalAdjustmentZ']*1e3
+    def _PromptReuseOrRecalc(self):
+        Skull=ReadFromH5py(self._FullSolName)
 
-            ret = QMessageBox.question(self,'', "Acoustic sim files already exist with:.\n"+
-                                    "FocalLength=%3.2f\n" %(Skull['FocalLength']*1e3)+
-                                    "Diameter=%3.2f\n" %(Skull['Aperture']*1e3)+
-                                    "TxMechanicalAdjustmentX=%3.2f\n" %(Skull['TxMechanicalAdjustmentX']*1e3)+
-                                    "TxMechanicalAdjustmentY=%3.2f\n" %(Skull['TxMechanicalAdjustmentY']*1e3)+
-                                    "DistanceSkin=%3.2f\n" %(DistanceSkin)+
-                                    "Do you want to recalculate?\nSelect No to reload",
-                QMessageBox.Yes | QMessageBox.No)
+        DistanceSkin = self._ZMaxSkin - Skull['TxMechanicalAdjustmentZ']*1e3
 
-            if ret == QMessageBox.Yes:
-                bCalcFields=True
-            else:
-                self.Widget.XMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentX']*1e3)
-                self.Widget.YMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentY']*1e3)
-                self.Widget.SkinDistanceSpinBox.setValue(DistanceSkin)
-                if 'zLengthBeyonFocalPoint' in Skull:
-                    self.Widget.MaxDepthSpinBox.setValue(Skull['zLengthBeyonFocalPoint']*1e3)
-        else:
-            bCalcFields = True
-        self._bRecalculated = True
-        if bCalcFields:
-            self._MainApp.Widget.tabWidget.setEnabled(False)
-            self.thread = QThread()
-            self.worker = RunAcousticSim(self._MainApp,
-                            extrasuffix,Diameter/1e3,FocalLength/1e3)
-            self.worker.moveToThread(self.thread)
-            self.thread.started.connect(self.worker.run)
-            self.worker.finished.connect(self.UpdateAcResults)
-            self.worker.finished.connect(self._MainApp.SendTelemetry)
-            self.worker.finished.connect(self.thread.quit)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.thread.finished.connect(self.thread.deleteLater)
+        ret = QMessageBox.question(self,'', "Acoustic sim files already exist with:.\n"+
+                                "FocalLength=%3.2f\n" %(Skull['FocalLength']*1e3)+
+                                "Diameter=%3.2f\n" %(Skull['Aperture']*1e3)+
+                                "TxMechanicalAdjustmentX=%3.2f\n" %(Skull['TxMechanicalAdjustmentX']*1e3)+
+                                "TxMechanicalAdjustmentY=%3.2f\n" %(Skull['TxMechanicalAdjustmentY']*1e3)+
+                                "DistanceSkin=%3.2f\n" %(DistanceSkin)+
+                                "Do you want to recalculate?\nSelect No to reload",
+            QMessageBox.Yes | QMessageBox.No)
 
-            self.worker.endError.connect(self.NotifyError)
-            self.worker.endError.connect(self._MainApp.SendTelemetry)
-            self.worker.endError.connect(self.thread.quit)
-            self.worker.endError.connect(self.worker.deleteLater)
- 
-            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+        if ret == QMessageBox.Yes:
+            return True
+        self.Widget.XMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentX']*1e3)
+        self.Widget.YMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentY']*1e3)
+        self.Widget.SkinDistanceSpinBox.setValue(DistanceSkin)
+        if 'zLengthBeyonFocalPoint' in Skull:
+            self.Widget.MaxDepthSpinBox.setValue(Skull['zLengthBeyonFocalPoint']*1e3)
+        return False
 
-            self.thread.start()
+    def _CreateAcousticWorker(self):
+        return RunAcousticSim(self._MainApp,
+                        self._extrasuffix,self._Diameter/1e3,self._FocalLength/1e3)
 
-            self._MainApp.showClockDialog()
-        else:
-            self.UpdateAcResults()
 
-   
     def GetExport(self):
         Export=super(SingleTx,self).GetExport()
         for k in ['FocalLength','Diameter','XMechanic','YMechanic','SkinDistance']:
@@ -216,7 +185,7 @@ class RunAcousticSim(QObject):
         COMPUTING_BACKEND=self._mainApp.Config['ComputingBackend']
         basedir,ID=os.path.split(os.path.split(self._mainApp.Config['T1WIso'])[0])
         basedir+=os.sep
-        Target=[self._mainApp.Config['ID']+'_'+self._mainApp.Config['TxSystem']]
+        Target=[self._mainApp.Config['ID'][self._mainApp.AcSim._TrajectoryNumber]+'_'+self._mainApp.Config['TxSystem']]
 
         InputSim=self._mainApp._outnameMask
 

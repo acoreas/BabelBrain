@@ -761,7 +761,7 @@ def SaveNiftiEnforcedISO(nii_in, fn):
         try: #lets try with a clean affine
             print('Affine matrix was not exactly orthonormal, fixing affine matrix')
             aff_clean = make_affine_itk_friendly(nii_in.affine, report=False)
-            nii = nibabel.Nifti1Image(nii_in.get_fdata(), aff_clean, header=nii_in.header)
+            nii = nibabel.Nifti1Image(nii_in.get_fdata(dtype=np.float32), aff_clean, header=nii_in.header)
             nii.to_filename(fn_unc)
             pre=sitk.ReadImage(fn_unc)
             pre.SetSpacing([res,res,res])
@@ -775,7 +775,7 @@ def SaveNiftiEnforcedISO(nii_in, fn):
             os.remove(fn_unc)
 
 
-def ResaveNormalized(rpath, mask):
+def ResaveNormalized(rpath, mask,bApplyOnlyMask=False):
     '''
     Resave simulation results with normalization based on mask.
     
@@ -794,8 +794,8 @@ def ResaveNormalized(rpath, mask):
 
     Results=nibabel.load(rpath)
 
-    ResultsData=Results.get_fdata()
-    MaskData=mask.get_fdata()
+    ResultsData=Results.get_fdata(dtype=np.float32)
+    MaskData=mask.get_fdata(dtype=np.float32)
     ii,jj,kk=np.mgrid[0:ResultsData.shape[0],0:ResultsData.shape[1],0:ResultsData.shape[2]]
 
     Indexes=np.c_[(ii.flatten().T,jj.flatten().T,kk.flatten().T,np.ones((kk.size,1)))].T
@@ -809,8 +809,9 @@ def ResaveNormalized(rpath, mask):
 
     SubMask=MaskData[IndexesMask[0,:],IndexesMask[1,:],IndexesMask[2,:]].reshape(ResultsData.shape)
     ResultsData[SubMask<4]=0
-    ResultsData/=ResultsData.max()
-    NormalizedNifti=nibabel.Nifti1Image(ResultsData,Results.affine,header=Results.header)
+    if not bApplyOnlyMask:
+        ResultsData/=ResultsData.max()
+    NormalizedNifti=nibabel.Nifti1Image(ResultsData.astype(np.float32),Results.affine,header=Results.header)
     NormalizedNifti.to_filename(NRPath)
 
 def compute_sdr_from_rays(volume, skull_mask, spacing_mm=(1.0, 1.0),
@@ -856,6 +857,139 @@ def compute_sdr_from_rays(volume, skull_mask, spacing_mm=(1.0, 1.0),
 ####
 bGPU_INITIALIZED = False
 ###
+
+def CreateMaterialMaps(N1,N2,N3,
+                       SkullMaskDataOrig,
+                       XLOffset,XROffset,YLOffset,YROffset,ZLOffset,ZROffset,
+                       XShrink_L,upperXR,YShrink_L,upperYR,ZShrink_L,upperZR,
+                       ZSourceLocation,
+                       ArrayMaterial,
+                       bWaterOnly=False,
+                       bForceHomogenousMedium=False,
+                       BenchmarkTestFile='',
+                       DensityCTMap=None,
+                       AirRegions=None):
+    '''
+    Build the simulation material maps from the (cropped) skull mask.
+
+    This is a standalone extraction of the material-map preparation block that
+    lives inside `SimulationConditionsBASE.UpdateConditions` (the code between
+    the creation of `self._MaterialMapRef` and the `else` branch that fills
+    `self._MaterialMap` with zeros). It is provided here so the logic can be
+    inspected/validated before replacing the in-place code in UpdateConditions.
+
+    Inputs
+    ------
+    N1,N2,N3 : int
+        Shape of the full (padded) simulation domain. Maps to
+        `self._N1,self._N2,self._N3`.
+    SkullMaskDataOrig : np.ndarray
+        Original (uncropped) skull/tissue label volume. Maps to
+        `self._SkullMaskDataOrig`.
+    XLOffset,XROffset,YLOffset,YROffset,ZLOffset,ZROffset : int
+        Padding offsets into the simulation domain. Map to the
+        `self._X/Y/Z L/R Offset` attributes.
+    XShrink_L,upperXR,YShrink_L,upperYR,ZShrink_L,upperZR : int
+        Cropping bounds into `SkullMaskDataOrig` (the `upper*R` values are the
+        precomputed upper bounds, i.e. `self._upperXR` etc.). Map to the
+        `self._*Shrink_L` and `self._upper*R` attributes.
+    ZSourceLocation : int
+        Z index of the source plane; tissue layers up to and including this
+        index are replaced by water. Maps to `self._ZSourceLocation`.
+    ArrayMaterial : np.ndarray
+        Material property array used only to bound-check the CT density labels;
+        equivalent to `self.ReturnArrayMaterial()`. Only `.shape[0]` is used.
+    bWaterOnly : bool
+        If True, produce a water-only (all zeros) material map.
+    bForceHomogenousMedium : bool
+        Testing flag; when True the material map is left at zeros here (the
+        homogeneous fill happens downstream).
+    BenchmarkTestFile : str
+        Testing flag; a non-empty path means the material map is provided
+        externally, so only the all-zeros map is produced here.
+    DensityCTMap : np.ndarray or None
+        Pseudo-CT density labels (uint32) to inject into the bone region. Maps
+        to `self._DensityCTMap`.
+    AirRegions : np.ndarray or None
+        Air region labels to crop into the domain. Maps to `self._AirRegions`.
+
+    Returns
+    -------
+    MaterialMap : np.ndarray (uint32)
+        The working material map. Maps to `self._MaterialMap`.
+    MaterialMapRef : np.ndarray (uint32)
+        The reference (raw, label-preserving) material map. Maps to
+        `self._MaterialMapRef`.
+    MaterialMapNoCT : np.ndarray or None
+        Copy of the material map before CT density injection (only produced
+        when `DensityCTMap` is not None, else None). Maps to
+        `self._MaterialMapNoCT`.
+    SubAirRegions : np.ndarray or None
+        Cropped air-region map (only produced when both `DensityCTMap` and
+        `AirRegions` are not None, else None). Maps to `self._SubAirRegions`.
+    '''
+    MaterialMapNoCT=None
+    SubAirRegions=None
+
+    # Use explicit upper bounds instead of negative indexing (e.g. XLOffset:-XROffset)
+    # so the slices stay correct when any *ROffset is 0. With negative indexing,
+    # -XROffset would become -0==0 and collapse the slice to an empty range.
+    upperXOff=N1-XROffset
+    upperYOff=N2-YROffset
+    upperZOff=N3-ZROffset
+
+    MaterialMapRef=np.zeros((N1,N2,N3),np.uint32) # note the 32 bit size
+    MaterialMapRef[XLOffset:upperXOff,
+                   YLOffset:upperYOff,
+                   ZLOffset:upperZOff]=\
+                   SkullMaskDataOrig.astype(np.uint32)[XShrink_L:upperXR,
+                                                       YShrink_L:upperYR,
+                                                       ZShrink_L:upperZR]
+    if bWaterOnly==False and bForceHomogenousMedium == False and len(BenchmarkTestFile)==0:
+        MaterialMap=MaterialMapRef
+        bBrainSegmentation = np.any(MaterialMap>5)
+        if DensityCTMap is not None:
+            assert(DensityCTMap.dtype==np.uint32)
+            BoneRegion=(MaterialMap==2) | (MaterialMap==3)
+            MaterialMapNoCT=MaterialMap.copy()
+            if bBrainSegmentation:
+                #we re arrange labels
+                MaterialMap[MaterialMap==4]=2
+                MaterialMap[MaterialMap==5]=2 #we define target as regular brain (we wil need to fix this later)
+                MaterialMap[MaterialMap>=6]-=3
+            else:
+                MaterialMap[MaterialMap>=4]=2 # Brain region is in material 2
+            SubCTMap=np.zeros_like(MaterialMap)
+            SubCTMap[XLOffset:upperXOff,
+                     YLOffset:upperYOff,
+                     ZLOffset:upperZOff]=\
+                       DensityCTMap[XShrink_L:upperXR,
+                                    YShrink_L:upperYR,
+                                    ZShrink_L:upperZR]
+            MaterialMap[BoneRegion]=SubCTMap[BoneRegion]
+            if AirRegions is not None:
+                SubAirRegions=np.zeros_like(MaterialMap)
+                SubAirRegions[XLOffset:upperXOff,
+                              YLOffset:upperYOff,
+                              ZLOffset:upperZOff]=\
+                                  AirRegions[XShrink_L:upperXR,
+                                             YShrink_L:upperYR,
+                                             ZShrink_L:upperZR]
+            assert(SubCTMap[BoneRegion].min()>=3)
+            assert(SubCTMap[BoneRegion].max()<=ArrayMaterial.shape[0])
+
+        else:
+            if bBrainSegmentation:
+                MaterialMap[MaterialMap>=5]-=1
+            else:
+                MaterialMap[MaterialMap==5]=4 # this is to make the focal spot location as brain tissue
+
+        #We remove tissue layers
+        MaterialMap[:,:,:ZSourceLocation+1] = 0 # we remove tissue layers by putting water
+    else:
+        MaterialMap=np.zeros((N1,N2,N3),np.uint32) # note the 32 bit size
+
+    return MaterialMap,MaterialMapRef,MaterialMapNoCT,SubAirRegions
 
 class RUN_SIM_BASE(object):
     '''
@@ -1055,14 +1189,18 @@ def OutputFileNames(MASKFNAME,target,Frequency,PPW,extrasuffix,bWaterOnly):
     OUT_FNAMES['RayleighFreeWater__'] = CPREFIX+'RayleighFreeWater__.nii.gz'
     OUT_FNAMES['FullElasticSolutionRefocus']=CPREFIX+'FullElasticSolutionRefocus.nii.gz'
     OUT_FNAMES['FullElasticSolutionRefocus_Sub']=CPREFIX+'FullElasticSolutionRefocus_Sub.nii.gz'
+    OUT_FNAMES['FullElasticSolutionRefocusPhase_Sub']=CPREFIX+'FullElasticSolutionRefocusPhase_Sub.nii.gz'
     OUT_FNAMES['FullElasticSolutionRefocus__']=CPREFIX+'FullElasticSolutionRefocus__.nii.gz'
     OUT_FNAMES['FullElasticSolutionRefocusPhase__']=CPREFIX+'FullElasticSolutionRefocusPhase__.nii.gz'
     OUT_FNAMES['FullElasticSolutionRefocus_Sub__']=CPREFIX+'FullElasticSolutionRefocus_Sub__.nii.gz'
+    OUT_FNAMES['FullElasticSolutionRefocusPhase_Sub__']=CPREFIX+'FullElasticSolutionRefocusPhase_Sub__.nii.gz'
     OUT_FNAMES['FullElasticSolution']=CPREFIX+'FullElasticSolution.nii.gz'
     OUT_FNAMES['FullElasticSolution_Sub']=CPREFIX+'FullElasticSolution_Sub.nii.gz'
+    OUT_FNAMES['FullElasticSolutionPhase_Sub']=CPREFIX+'FullElasticSolutionPhase_Sub.nii.gz'
     OUT_FNAMES['FullElasticSolution__']=CPREFIX+'FullElasticSolution__.nii.gz'
     OUT_FNAMES['FullElasticSolutionPhase__']=CPREFIX+'FullElasticSolutionPhase__.nii.gz'
     OUT_FNAMES['FullElasticSolution_Sub__']=CPREFIX+'FullElasticSolution_Sub__.nii.gz'
+    OUT_FNAMES['FullElasticSolutionPhase_Sub__']=CPREFIX+'FullElasticSolutionPhase_Sub__.nii.gz'
     OUT_FNAMES['DataForSim']=CPREFIX+'DataForSim.h5'
     return OUT_FNAMES
 
@@ -1158,7 +1296,7 @@ class BabelFTD_Simulations_BASE(object):
 
     def Step1_InitializeConditions(self): #in case it is desired to move up or down in the Z direction the focal spot
         self._SkullMask=nibabel.load(self._MASKFNAME)
-        SkullMaskDataOrig=np.flip(self._SkullMask.get_fdata(),axis=2)
+        SkullMaskDataOrig=np.flip(self._SkullMask.get_fdata(dtype=np.float32),axis=2)
 
         bBrainSegmentation = np.any(SkullMaskDataOrig>5)
         if bBrainSegmentation:
@@ -1173,10 +1311,10 @@ class BabelFTD_Simulations_BASE(object):
         if self._CTFNAME is not None and not self._bWaterOnly\
                                      and not self._bForceHomogenousMedium\
                                      and len(self._BenchmarkTestFile)==0:
-            DensityCTMap = np.flip(nibabel.load(self._CTFNAME).get_fdata(),axis=2).astype(np.uint32)
+            DensityCTMap = np.flip(nibabel.load(self._CTFNAME).get_fdata().astype(np.uint32),axis=2)
             DensitCTMapOrig=DensityCTMap.copy()
             if self._AIRMASK:
-                AirRegions = np.flip(nibabel.load(self._AIRMASK).get_fdata(),axis=2).astype(np.uint32)
+                AirRegions = np.flip(nibabel.load(self._AIRMASK).get_fdata().astype(np.uint32),axis=2)
             AllBoneHU = np.load(self._CTFNAME.split('CT.nii.gz')[0]+'CT-cal.npz')['UniqueHU']
             print('Range HU CT, Unique entries',AllBoneHU.min(),AllBoneHU.max(),len(AllBoneHU))
             print('USING MAPPING METHOD = ',self._MappingMethod)
@@ -1472,11 +1610,11 @@ class BabelFTD_Simulations_BASE(object):
         affine[0:3,0:3]=affine[0:3,0:3] @ (np.eye(3)*subsamplingFactor)
 
         if bMinimalSaving==False and not bUseRayleighForWater:
-            nii=nibabel.Nifti1Image(RayleighWaterOverlay[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(RayleighWaterOverlay[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMES['RayleighFreeWaterWOverlay__'])
         
         if not bUseRayleighForWater: 
-            nii=nibabel.Nifti1Image(RayleighWater[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(RayleighWater[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMES['RayleighFreeWater__'])
 
         [mx,my,mz]=np.where(MaskCalcRegions)
@@ -1486,38 +1624,48 @@ class BabelFTD_Simulations_BASE(object):
         mx=np.unique(mx.flatten())
         my=np.unique(my.flatten())
         mz=np.unique(mz.flatten())
+        mx[-1]+=1
+        my[-1]+=1
+        mz[-1]+=1
         if self._bDoRefocusing:
-            nii=nibabel.Nifti1Image(FullSolutionPressureRefocus[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(FullSolutionPressureRefocus[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionRefocus__'])
-            nii=nibabel.Nifti1Image(FullSolutionPhaseRefocus[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(FullSolutionPhaseRefocus[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionRefocusPhase__'])
-            nii=nibabel.Nifti1Image(FullSolutionPressureRefocus[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]],affine=affineSub)
+            nii=nibabel.Nifti1Image(FullSolutionPressureRefocus[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
             SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionRefocus_Sub__'])
             ResaveNormalized(FILENAMES['FullElasticSolutionRefocus_Sub'],self._SkullMask)
+            nii=nibabel.Nifti1Image(FullSolutionPhaseRefocus[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
+            SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionResfocusPhase_Sub__'])
+            ResaveNormalized(FILENAMES['FullElasticSolutionResfocusPhase_Sub'],self._SkullMask,bApplyOnlyMask=True)
 
                 
-        nii=nibabel.Nifti1Image(FullSolutionPressure[::ss,::ss,::ss],affine=affine)
+        nii=nibabel.Nifti1Image(FullSolutionPressure[::ss,::ss,::ss].astype(np.float32),affine=affine)
         SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolution__'])
 
-        nii=nibabel.Nifti1Image(FullSolutionPhase[::ss,::ss,::ss],affine=affine)
+        nii=nibabel.Nifti1Image(FullSolutionPhase[::ss,::ss,::ss].astype(np.float32),affine=affine)
         SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionPhase__'])
         if bUseRayleighForWater:
-            nii=nibabel.Nifti1Image(RayleighWater[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(RayleighWater[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMESWater['FullElasticSolution__'])
-            nii=nibabel.Nifti1Image(RayleighWaterPhase[::ss,::ss,::ss],affine=affine)
+            nii=nibabel.Nifti1Image(RayleighWaterPhase[::ss,::ss,::ss].astype(np.float32),affine=affine)
             SaveNiftiEnforcedISO(nii,FILENAMESWater['FullElasticSolution__'])
 
-        nii=nibabel.Nifti1Image(FullSolutionPressure[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]],affine=affineSub)
+        nii=nibabel.Nifti1Image(FullSolutionPressure[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
         SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolution_Sub__'])
         ResaveNormalized(FILENAMES['FullElasticSolution_Sub'],self._SkullMask)
+        
+        nii=nibabel.Nifti1Image(FullSolutionPhase[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
+        SaveNiftiEnforcedISO(nii,FILENAMES['FullElasticSolutionPhase_Sub__'])
+        ResaveNormalized(FILENAMES['FullElasticSolutionPhase_Sub'],self._SkullMask,bApplyOnlyMask=True)
 
         if bUseRayleighForWater:
-            nii=nibabel.Nifti1Image(RayleighWater[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]],affine=affineSub)
+            nii=nibabel.Nifti1Image(RayleighWater[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
             SaveNiftiEnforcedISO(nii,FILENAMESWater['FullElasticSolution_Sub__'])
             ResaveNormalized(FILENAMESWater['FullElasticSolution_Sub'],self._SkullMask)
 
         if not bUseRayleighForWater: 
-            nii=nibabel.Nifti1Image(RayleighWater[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]],affine=affineSub)
+            nii=nibabel.Nifti1Image(RayleighWater[mx[0]:mx[-1],my[0]:my[-1],mz[0]:mz[-1]].astype(np.float32),affine=affineSub)
             SaveNiftiEnforcedISO(nii,FILENAMES['RayleighFreeWater__'].replace('RayleighFreeWater','RayleighFreeWater_Sub'))
         
         if subsamplingFactor>1:
@@ -1556,7 +1704,7 @@ class BabelFTD_Simulations_BASE(object):
         ###
 
         FocIJK=np.ones((4,1))
-        DataMaskOrig=self._SkullMask.get_fdata()
+        DataMaskOrig=self._SkullMask.get_fdata(dtype=np.float32)
         DataMask=np.flip(DataMaskOrig,axis=2)
         FocIJK[:3,0]=np.array(np.where(DataMask==5)).flatten()
 
@@ -1841,7 +1989,7 @@ class SimulationConditionsBASE(object):
         self._ZSourceLocation=self._ZIntoSkinPixels+self._PMLThickness
         
         #we save the mask array and flipped
-        self._SkullMaskDataOrig=np.flip(SkullMaskNii.get_fdata(),axis=2)
+        self._SkullMaskDataOrig=np.flip(SkullMaskNii.get_fdata(dtype=np.float32),axis=2)
         self._SkullMaskNii=SkullMaskNii
         voxelS=np.array(SkullMaskNii.header.get_zooms())*1e-3
         print('voxelS, SpatialStep',voxelS,SpatialStep)
@@ -2108,7 +2256,6 @@ elif self._bTightNarrowBeamDomain and "{0}" != "Z" :
         nStepsBack=int(self._NumberCyclesToTrackAtEnd*self._PPP)
         self._SensorStart=int((TimeVector.shape[0]-nStepsBack)/self._SensorSubSampling)
 
-        self._MaterialMapRef=np.zeros((self._N1,self._N2,self._N3),np.uint32) # note the 32 bit size
         self._SubAirRegions=None
         #we add the material map
         if self._XShrink_R==0:
@@ -2150,58 +2297,23 @@ elif self._bTightNarrowBeamDomain and "{0}" != "Z" :
                                           affine=affineSub)
             debugmask.to_filename(os.environ['BABELBRAIN_SEL_MASK'])
             
-            
-        self._MaterialMapRef[self._XLOffset:-self._XROffset,
-                            self._YLOffset:-self._YROffset,
-                            self._ZLOffset:-self._ZROffset]=\
-                            self._SkullMaskDataOrig.astype(np.uint32)[self._XShrink_L:self._upperXR,
-                                                                        self._YShrink_L:self._upperYR,
-                                                                        self._ZShrink_L:self._upperZR]
-        if bWaterOnly==False and bForceHomogenousMedium == False and len(BenchmarkTestFile)==0:
-            self._MaterialMap=self._MaterialMapRef
-            bBrainSegmentation = np.any(self._MaterialMap>5)
-            if self._DensityCTMap is not None:
-                assert(self._DensityCTMap.dtype==np.uint32)
-                BoneRegion=(self._MaterialMap==2) | (self._MaterialMap==3)
-                self._MaterialMapNoCT=self._MaterialMap.copy()
-                if bBrainSegmentation:
-                    #we re arrange labels
-                    self._MaterialMap[self._MaterialMap==4]=2 
-                    self._MaterialMap[self._MaterialMap==5]=2 #we define target as regular brain (we wil need to fix this later)
-                    self._MaterialMap[self._MaterialMap>=6]-=3   
-                else:
-                    self._MaterialMap[self._MaterialMap>=4]=2 # Brain region is in material 2
-                SubCTMap=np.zeros_like(self._MaterialMap)
-                SubCTMap[self._XLOffset:-self._XROffset,
-                              self._YLOffset:-self._YROffset,
-                              self._ZLOffset:-self._ZROffset]=\
-                                self._DensityCTMap[self._XShrink_L:self._upperXR,
-                                                                         self._YShrink_L:self._upperYR,
-                                                                         self._ZShrink_L:self._upperZR]
-                self._MaterialMap[BoneRegion]=SubCTMap[BoneRegion]
-                if self._AirRegions is not None:
-                    SubAirRegions=np.zeros_like(self._MaterialMap)
-                    SubAirRegions[self._XLOffset:-self._XROffset,
-                                self._YLOffset:-self._YROffset,
-                                self._ZLOffset:-self._ZROffset]=\
-                                    self._AirRegions[self._XShrink_L:self._upperXR,
-                                                                            self._YShrink_L:self._upperYR,
-                                                                            self._ZShrink_L:self._upperZR]
-                    self._SubAirRegions=SubAirRegions
-                assert(SubCTMap[BoneRegion].min()>=3)
-                assert(SubCTMap[BoneRegion].max()<=self.ReturnArrayMaterial().shape[0])
+        self._MaterialMap,self._MaterialMapRef,MaterialMapNoCT,SubAirRegions=CreateMaterialMaps(
+            self._N1,self._N2,self._N3,
+            self._SkullMaskDataOrig,
+            self._XLOffset,self._XROffset,self._YLOffset,self._YROffset,self._ZLOffset,self._ZROffset,
+            self._XShrink_L,self._upperXR,self._YShrink_L,self._upperYR,self._ZShrink_L,self._upperZR,
+            self._ZSourceLocation,
+            self.ReturnArrayMaterial(),
+            bWaterOnly=bWaterOnly,
+            bForceHomogenousMedium=bForceHomogenousMedium,
+            BenchmarkTestFile=BenchmarkTestFile,
+            DensityCTMap=self._DensityCTMap,
+            AirRegions=self._AirRegions)
+        if MaterialMapNoCT is not None:
+            self._MaterialMapNoCT=MaterialMapNoCT
+        if SubAirRegions is not None:
+            self._SubAirRegions=SubAirRegions
 
-            else:
-                if bBrainSegmentation:
-                    self._MaterialMap[self._MaterialMap>=5]-=1 
-                else:
-                    self._MaterialMap[self._MaterialMap==5]=4 # this is to make the focal spot location as brain tissue
-
-            #We remove tissue layers
-            self._MaterialMap[:,:,:self._ZSourceLocation+1] = 0 # we remove tissue layers by putting water
-        else:
-            self._MaterialMap=np.zeros((self._N1,self._N2,self._N3),np.uint32) # note the 32 bit size
-        
         #####
         ##### bForceHomogenousMedium and BenchmarkTestFile are only for testing
         #####

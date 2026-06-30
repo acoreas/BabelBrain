@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSlider,
     QSizePolicy, QFileDialog, QPushButton, QFrame, QSplitter,
     QButtonGroup, QRadioButton, QCheckBox, QGroupBox,
-    QScrollArea, QComboBox, QToolButton, QLineEdit,
+    QScrollArea, QComboBox, QToolButton, QLineEdit, QTabWidget,
 )
 
 import vtk
@@ -144,9 +144,10 @@ def _make_lut(
 ) -> vtk.vtkLookupTable:
     """
     Build a vtkLookupTable for the given colour map.
-    If cutoff is not None, all scalar values < cutoff are mapped to alpha=0
-    (fully transparent), effectively masking them out.  Values >= cutoff use
-    the normal colour map with alpha=1.
+    If cutoff is not None, values below the cutoff are made fully transparent
+    (alpha=0) AND the colour map is rescaled so the remaining range
+    [cutoff, hi] spans the full gradient (cutoff -> first colour, hi -> last
+    colour) instead of only its upper portion.
     """
 
     if name == 'tissue_label':
@@ -210,14 +211,27 @@ def _make_lut(
             lut.SetValueRange(0, 1)
         lut.Build()
 
-    # Apply cutoff: zero the alpha of every entry whose scalar < cutoff.
+    # Apply cutoff.  Values below the cutoff are made fully transparent AND the
+    # colour map is rescaled so the remaining range [cutoff, hi] spans the full
+    # gradient (cutoff -> first colour, hi -> last colour) instead of only its
+    # upper portion.  This keeps the visible overlay consistent with the
+    # colourbar and removes the blank band that used to sit below the cutoff.
     if cutoff is not None and hi > lo:
-        span = hi - lo
+        span  = hi - lo
+        t_cut = min(max((cutoff - lo) / span, 0.0), 1.0)
+        # Snapshot the freshly built gradient before overwriting any entries.
+        src   = [lut.GetTableValue(i) for i in range(N)]
+        denom = 1.0 - t_cut
         for i in range(N):
-            scalar = lo + (i / (N - 1)) * span
-            if scalar < cutoff:
-                r, g, b, _ = lut.GetTableValue(i)
-                lut.SetTableValue(i, r, g, b, 0.0)
+            t = i / (N - 1)
+            if t < t_cut or denom <= 0.0:
+                r, g, b, _ = src[i]
+                lut.SetTableValue(i, r, g, b, 0.0)   # below cutoff -> transparent
+            else:
+                s  = (t - t_cut) / denom             # rescale [cutoff, hi] -> [0, 1]
+                si = int(round(s * (N - 1)))
+                r, g, b, _ = src[si]
+                lut.SetTableValue(i, r, g, b, 1.0)
 
     return lut
 
@@ -1031,8 +1045,10 @@ class ColourBar(QWidget):
     selected volume.
 
     The bar spans [level - window/2, level + window/2] (the visible data
-    range).  Five evenly-spaced tick marks with numeric labels are drawn on
-    the right side.  The colourmap exactly mirrors the LUT used by VTK.
+    range), or [cutoff, level + window/2] when a cutoff is active so the
+    gradient starts at the cutoff value with no blank band below it.  Five
+    evenly-spaced tick marks with numeric labels are drawn on the right side.
+    The colourmap exactly mirrors the LUT used by VTK.
 
     Call update_bar(rec) whenever the selected volume or its WL/cmap changes.
     """
@@ -1110,20 +1126,22 @@ class ColourBar(QWidget):
         half_w    = self._window / 2.0
         disp_lo   = self._level - half_w
         disp_hi   = self._level + half_w
-        data_span = self._hi - self._lo or 1.0
+
+        # When a cutoff is set the bar starts at the cutoff value: the gradient is
+        # recomputed so cutoff -> first colour and disp_hi -> last colour, leaving
+        # no blank band below the cutoff.  Otherwise it spans the full WL range.
+        bar_lo = disp_lo
+        if self._cutoff is not None:
+            bar_lo = min(max(self._cutoff, disp_lo), disp_hi)
+        bar_span = (disp_hi - bar_lo) or 1.0
 
         # ── gradient strip ───────────────────────────────────────────────────
         for py in range(bar_h):
             t_bar  = 1.0 - py / max(bar_h - 1, 1)
-            scalar = disp_lo + t_bar * (disp_hi - disp_lo)
-            t_lut  = max(0.0, min(1.0, (scalar - self._lo) / data_span))
-
-            if self._cutoff is not None and scalar < self._cutoff:
-                painter.setPen(bg_color)
-            else:
-                r, g, b = _cmap_rgb(self._cmap, t_lut)
-                painter.setPen(QColor(r, g, b))
-
+            scalar = bar_lo + t_bar * (disp_hi - bar_lo)
+            t_lut  = max(0.0, min(1.0, (scalar - bar_lo) / bar_span))
+            r, g, b = _cmap_rgb(self._cmap, t_lut)
+            painter.setPen(QColor(r, g, b))
             painter.drawLine(bar_x, bar_y + py,
                              bar_x + self.BAR_W - 1, bar_y + py)
 
@@ -1141,7 +1159,7 @@ class ColourBar(QWidget):
 
         for i in range(5):
             t_tick = i / 4
-            scalar = disp_lo + t_tick * (disp_hi - disp_lo)
+            scalar = bar_lo + t_tick * (disp_hi - bar_lo)
             py     = bar_y + bar_h - 1 - int(t_tick * (bar_h - 1))
 
             painter.setPen(tick_color)
@@ -1172,6 +1190,8 @@ class LayerRow(QWidget):
     remove_requested   = Signal(int)
     wl_select          = Signal(int)
     cutoff_changed     = Signal(int, object)   # (vol_idx, float | None)
+    wl_changed         = Signal(int, float, float)  # (vol_idx, window, level)
+    wl_reset           = Signal(int)                # (vol_idx) — restore default W/L
 
     def __init__(self, vol_idx: int, rec: VolumeRecord,parent=None,tissue_label=False):
         super().__init__(parent)
@@ -1197,7 +1217,10 @@ class LayerRow(QWidget):
             """)
 
     def update_wl_readout(self, window: float, level: float) -> None:
-        self._wl_lbl.setText(f"W {window:.0f}  L {level:.0f}")
+        for edit, value in ((self._w_edit, window), (self._l_edit, level)):
+            edit.blockSignals(True)
+            edit.setText(f"{value:.4g}")
+            edit.blockSignals(False)
 
     def _build_ui(self, rec: VolumeRecord):
         color = VOL_COLORS[self._vol_idx % len(VOL_COLORS)]
@@ -1291,18 +1314,67 @@ class LayerRow(QWidget):
 
         lay.addLayout(hrow)
 
-        # ── W/L readout ────────────────────────────────────────────────
-        self._wl_lbl = QLabel(
-            f"W {rec.wl_window:.0f}  L {rec.wl_level:.0f}")
-        self._wl_lbl.setStyleSheet(
-            f"color:{TEXT_DIM}; font-size:10px; font-family:monospace;")
-        lay.addWidget(self._wl_lbl)
+        # ── W/L editable fields + per-layer reset ──────────────────────
+        # Window/Level can be typed directly (handy for restoring a scalar
+        # overlay that was windowed by accident), and the ↺ button restores
+        # this layer's W/L to its default data range without touching the
+        # camera, slice, cutoff, or any other layer.
+        wlrow = QHBoxLayout(); wlrow.setSpacing(4)
+
+        def _wl_edit(value: float) -> QLineEdit:
+            e = QLineEdit(f"{value:.4g}")
+            e.setFixedWidth(50)
+            e.setFixedHeight(20)
+            e.setValidator(QDoubleValidator())
+            e.setStyleSheet(f"""
+                QLineEdit {{
+                    background:#1a1a22; color:{TEXT_DIM};
+                    border:1px solid #444455; border-radius:3px;
+                    padding:0 3px; font-size:10px; font-family:monospace;
+                }}
+                QLineEdit:focus {{ border-color:{color}; }}
+            """)
+            return e
+
+        w_cap = QLabel("W"); w_cap.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        l_cap = QLabel("L"); l_cap.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        self._w_edit = _wl_edit(rec.wl_window)
+        self._l_edit = _wl_edit(rec.wl_level)
+        self._w_edit.setToolTip("Window width (contrast). Press Enter to apply.")
+        self._l_edit.setToolTip("Window level (brightness centre). Press Enter to apply.")
+        self._w_edit.editingFinished.connect(self._on_wl_edited)
+        self._l_edit.editingFinished.connect(self._on_wl_edited)
+
+        self._wl_reset_btn = QToolButton()
+        self._wl_reset_btn.setText("↺")
+        self._wl_reset_btn.setFixedSize(20, 20)
+        self._wl_reset_btn.setToolTip("Reset this layer's window/level to default")
+        self._wl_reset_btn.setStyleSheet(f"""
+            QToolButton {{ border:1px solid #444455; background:transparent;
+                           color:{TEXT_DIM}; border-radius:3px; font-size:12px; }}
+            QToolButton:hover {{ border-color:{color}; color:{color}; }}
+        """)
+        self._wl_reset_btn.clicked.connect(
+            lambda: self.wl_reset.emit(self._vol_idx))
+
+        wlrow.addWidget(w_cap)
+        wlrow.addWidget(self._w_edit)
+        wlrow.addWidget(l_cap)
+        wlrow.addWidget(self._l_edit)
+        wlrow.addStretch(1)
+        wlrow.addWidget(self._wl_reset_btn)
+        lay.addLayout(wlrow)
+
+        # Widgets hidden for tissue-label layers (they have no W/L meaning).
+        self._wl_widgets = [w_cap, self._w_edit, l_cap, self._l_edit,
+                            self._wl_reset_btn]
 
         # Style the WL button initially (inactive)
         self.set_wl_active(False)
 
         if self._tissue_label:
-            self._wl_lbl.setVisible(False)
+            for wdg in self._wl_widgets:
+                wdg.setVisible(False)
 
         # ── Opacity row (overlays only) ────────────────────────────────
         # if not self._is_base:
@@ -1374,6 +1446,14 @@ class LayerRow(QWidget):
             except ValueError:
                 pass
 
+    def _on_wl_edited(self):
+        try:
+            window = float(self._w_edit.text())
+            level  = float(self._l_edit.text())
+        except ValueError:
+            return
+        self.wl_changed.emit(self._vol_idx, max(1.0, window), level)
+
 # ── LayerPanel ─────────────────────────────────────────────────────────────
 
 class LayerPanel(QWidget):
@@ -1386,6 +1466,8 @@ class LayerPanel(QWidget):
     remove_requested   = Signal(int)
     wl_select_changed  = Signal(int)    # (vol_idx) — WL target changed
     cutoff_changed     = Signal(int, object)   # (vol_idx, float | None)
+    wl_changed         = Signal(int, float, float)  # (vol_idx, window, level)
+    wl_reset           = Signal(int)                # (vol_idx) — restore default W/L
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1430,6 +1512,8 @@ class LayerPanel(QWidget):
         row.remove_requested.connect(self.remove_requested)
         row.wl_select.connect(self._on_row_wl_select)
         row.cutoff_changed.connect(self.cutoff_changed)
+        row.wl_changed.connect(self.wl_changed)
+        row.wl_reset.connect(self.wl_reset)
         self._vlay.insertWidget(self._vlay.count() - 1, row)
         self._rows.append(row)
         # Auto-select WL on the newest row
@@ -1547,6 +1631,8 @@ class NiftiViewer(QWidget):
         self._layer_panel.remove_requested.connect(self._on_remove_requested)
         self._layer_panel.wl_select_changed.connect(self._on_wl_select_changed)
         self._layer_panel.cutoff_changed.connect(self._on_cutoff_changed)
+        self._layer_panel.wl_changed.connect(self._on_wl_edited)
+        self._layer_panel.wl_reset.connect(self._on_wl_reset)
         outer_spl.addWidget(self._layer_panel)
 
         # Viewports expand, colorbar and layer panel stay fixed
@@ -1890,6 +1976,32 @@ class NiftiViewer(QWidget):
     def _on_wl_end(self) -> None:
         pass   # could trigger a full property refresh if needed
 
+    def _on_wl_edited(self, vol_idx: int, window: float, level: float) -> None:
+        """Apply window/level typed directly into a layer's W/L fields."""
+        if vol_idx >= len(self._volumes):
+            return
+        rec = self._volumes[vol_idx]
+        rec.wl_window = max(1.0, window)
+        rec.wl_level  = level
+        for vp in self._vps:
+            vp.set_wl(vol_idx, rec.wl_window, rec.wl_level)
+        if vol_idx == self._selected_vol:
+            self._colorbar.update_bar(rec)
+        self.wl_updated.emit(vol_idx, rec.wl_window, rec.wl_level)
+
+    def _on_wl_reset(self, vol_idx: int) -> None:
+        """Restore one layer's window/level to its default data range."""
+        if vol_idx >= len(self._volumes):
+            return
+        rec = self._volumes[vol_idx]
+        rec.wl_window = rec.hi - rec.lo or 1.0
+        rec.wl_level  = (rec.hi + rec.lo) / 2.0
+        for vp in self._vps:
+            vp.set_wl(vol_idx, rec.wl_window, rec.wl_level)
+        if vol_idx == self._selected_vol:
+            self._colorbar.update_bar(rec)
+        self.wl_updated.emit(vol_idx, rec.wl_window, rec.wl_level)
+
     # ── Layer signal handlers ─────────────────────────────────────────────
 
     def _on_opacity_changed(self, vol_idx: int, opacity: float) -> None:
@@ -2073,21 +2185,20 @@ def _tb_sep() -> QFrame:
     return sep
 
 
-class NiftiViewerWindow(QWidget):
+class NiftiViewerTab(QWidget):
     """
-    Self-contained NIfTI viewer widget.  Derives from QWidget so it can be
-    embedded directly in any parent layout of an existing application:
+    One self-contained NIfTI viewer panel: a toolbar plus a NiftiViewer.
 
-        viewer_widget = NiftiViewerWindow(parent=some_parent)
-        some_layout.addWidget(viewer_widget)
-
+    Each tab in NiftiViewerWindow holds one of these and is completely
+    independent of the others (its own volumes, display mode, crosshair state,
+    RAS navigator, screenshot/reset actions, …).  The contained NiftiViewer is
+    exposed as `self.viewer`; the owning NiftiViewerWindow collects these into a
+    list (one per trajectory).
     """
-
-    closed = Signal()  # custom signal emitted on close
 
     def __init__(self, parent=None, stand_alone=False):
         super().__init__(parent)
-        self.setStyleSheet(f"NiftiViewerWindow {{ background:{BG_DARK}; }}")
+        self.setStyleSheet(f"NiftiViewerTab {{ background:{BG_DARK}; }}")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2260,7 +2371,7 @@ class NiftiViewerWindow(QWidget):
         if not path:
             return
         try:
-            focal_voxel = (np.array(nib.load(path).get_fdata().shape)/2).astype(int)
+            focal_voxel = (np.array(nib.load(path).shape)/2).astype(int)
             self.viewer.load_base(path,focal_voxel,os.path.basename(path))
             self._btn_overlay.setEnabled(True)
             self._btn_screenshot.setEnabled(True)
@@ -2294,6 +2405,78 @@ class NiftiViewerWindow(QWidget):
         except Exception as exc:
             raise
 
+
+# ── Top-level tabbed window ──────────────────────────────────────────────────
+
+# Tab bar styling consistent with the dark viewer theme.
+_TABS_STYLE = f"""
+QTabWidget::pane {{ border:1px solid #333340; background:{BG_DARK}; }}
+QTabBar::tab {{
+    background:{BG_PANEL}; color:{TEXT_DIM};
+    border:1px solid #333340; border-bottom:none;
+    border-top-left-radius:4px; border-top-right-radius:4px;
+    padding:4px 12px; margin-right:2px; font-size:12px;
+}}
+QTabBar::tab:selected {{ background:{BG_LAYER}; color:{ACCENT}; }}
+QTabBar::tab:hover {{ color:{TEXT}; }}
+"""
+
+
+class NiftiViewerWindow(QWidget):
+    """
+    Top-level NIfTI viewer widget presenting one tab per trajectory.
+
+    Each tab is an independent NiftiViewerTab (toolbar + NiftiViewer).  The
+    per-tab NiftiViewer instances are gathered into the `viewer` list so callers
+    can address a given trajectory's viewer directly, e.g.::
+
+        win = NiftiViewerWindow(trajectories=['traj_A', 'traj_B'])
+        win.viewer[0].load_base(...)   # first trajectory
+        win.viewer[1].add_overlay(...) # second trajectory
+
+    Parameters
+    ----------
+    trajectories : list | int | None
+        Tab titles (typically the trajectory IDs).  An int N is treated as N
+        unnamed tabs.  None / empty defaults to a single tab.
+    """
+
+    closed = Signal()  # custom signal emitted on close
+
+    def __init__(self, parent=None, stand_alone=False, trajectories=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"NiftiViewerWindow {{ background:{BG_DARK}; }}")
+
+        # Normalise the trajectories argument into a list of tab titles.
+        if trajectories is None:
+            titles = ["Trajectory 1"]
+        elif isinstance(trajectories, int):
+            titles = [f"Trajectory {i + 1}" for i in range(max(1, trajectories))]
+        else:
+            titles = [str(t) for t in trajectories] or ["Trajectory 1"]
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.tabs = QTabWidget(self)
+        # Keep trajectory names fully visible and scroll (rather than elide)
+        # when many tabs don't fit.
+        self.tabs.tabBar().setElideMode(Qt.ElideNone)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setStyleSheet(_TABS_STYLE)
+        root.addWidget(self.tabs)
+
+        # One independent panel (and thus one NiftiViewer) per trajectory.
+        self.panels: list[NiftiViewerTab] = []
+        self.viewer: list[NiftiViewer] = []
+        for title in titles:
+            panel = NiftiViewerTab(self, stand_alone=stand_alone)
+            self.tabs.addTab(panel, title)
+            self.panels.append(panel)
+            self.viewer.append(panel.viewer)
+
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)  # let the default close logic run
@@ -2314,10 +2497,10 @@ def main():
     args = sys.argv[1:]
     if args:
         try:
-            focal_voxel = (np.array(nib.load(args[0]).get_fdata().shape)/2).astype(int)
-            win.viewer.load_base(args[0],focal_voxel,os.path.basename(args[0]))
+            focal_voxel = (np.array(nib.load(args[0]).shape)/2).astype(int)
+            win.viewer[0].load_base(args[0],focal_voxel,os.path.basename(args[0]))
             for path in args[1:]:
-                win.viewer.add_overlay(path,name=os.path.basename(path))
+                win.viewer[0].add_overlay(path,name=os.path.basename(path))
         except Exception as exc:
             raise
 

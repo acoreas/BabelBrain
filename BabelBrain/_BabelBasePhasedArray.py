@@ -54,9 +54,14 @@ class BabelBasePhaseArray(BabelBaseTx):
 
 
     def load_ui(self,formtype):
-        # the concrete form class is
-        # passed in via `formtype`, which is now either a class (preferred)
-        # or a legacy path that selects the matching form class by suffix.
+        # the concrete form class is passed in via `formtype` (a class, or a
+        # legacy path resolved by suffix); stash it for _CreateForm and build the
+        # per-trajectory tabs.
+        self._formtype = formtype
+        self._setupTrajectoryTabs()
+
+    def _CreateForm(self):
+        formtype = self._formtype
         if isinstance(formtype, type):
             form_cls = formtype
         else:
@@ -67,19 +72,16 @@ class BabelBasePhaseArray(BabelBaseTx):
                 from Babel_H317.H317Form import H317Form as form_cls
             else:
                 raise ValueError(f"No programmatic form mapping for {formtype}")
-        self.Widget = form_cls(self)
+        return form_cls(self)
 
-        _l = QVBoxLayout(self)
-        _l.setContentsMargins(0, 0, 0, 0)
-        _l.addWidget(self.Widget)
-
+    def _WirePanel(self):
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
 
         for spinbox,ID in zip([self.Widget.XSteeringSpinBox,
                                self.Widget.YSteeringSpinBox,
                                self.Widget.ZSteeringSpinBox],
                                ['X','Y','Z']):
-            
+
             spinbox.setMinimum(self.Config['Minimal'+ID+'Steering']*1e3)
             spinbox.setMaximum(self.Config['Maximal'+ID+'Steering']*1e3)
             spinbox.setValue(0.0)
@@ -88,16 +90,16 @@ class BabelBasePhaseArray(BabelBaseTx):
             self.Widget.DistanceConeToFocusSpinBox.setMinimum(self.Config['MinimalDistanceConeToFocus']*1e3)
             self.Widget.DistanceConeToFocusSpinBox.setMaximum(self.Config['MaximalDistanceConeToFocus']*1e3)
             self.Widget.DistanceConeToFocusSpinBox.setValue(self.Config['DefaultDistanceConeToFocus']*1e3)
-        
+
         self.Widget.MultifocusLabel.setVisible(False)
         self.Widget.SelCombinationDropDown.setVisible(False)
         while self.Widget.SelCombinationDropDown.count()>0:
             self.Widget.SelCombinationDropDown.removeItem(0)
         self.Widget.SelCombinationDropDown.addItem('ALL') # Add this will cover the case of single focus
-        
+
         self.Widget.ZSteeringSpinBox.valueChanged.connect(self.ZSteeringUpdate)
         self.Widget.RefocusingcheckBox.stateChanged.connect(self.EnableRefocusing)
-        self.Widget.CalculateAcField.clicked.connect(self.RunSimulation)
+        
         if hasattr(self.Widget,'DistanceConeToFocusSpinBox'):
             self.Widget.ZMechanicSpinBox.setVisible(False) #for these Tx, we disable ZMechanic as this is controlled by the distance cone to focus
             self.Widget.ZMechaniclabel.setVisible(False)
@@ -125,101 +127,74 @@ class BabelBasePhaseArray(BabelBaseTx):
 
         
     def NotifyGeneratedMask(self):
-        VoxelSize=self._MainApp._MaskNib.header.get_zooms()[0]
-        TargetLocation =np.array(np.where(self._MainApp._FinalMask==5.0)).flatten()
-        LineOfSight=self._MainApp._FinalMask[TargetLocation[0],TargetLocation[1],:]
-        StartSkin=np.where(LineOfSight>0)[0].min()
-        DistanceFromSkin = (TargetLocation[2]-StartSkin)*VoxelSize
-
-        self.Widget.DistanceSkinLabel.setText('%3.2f'%(DistanceFromSkin))
-        self.Widget.DistanceSkinLabel.setProperty('UserData',DistanceFromSkin)
+        self._SyncActiveTrajectoryFromMainApp()
+        self.CalculateDistanceFromSkin()
         self._UnmodifiedZMechanic = 0.0
         self.ZSteeringUpdate(0)
 
     @Slot()
-    def RunSimulation(self):
+    def _ResolveSimulationFilenames(self):
         #we create an object to do a dryrun to recover filenames
         dry=RunAcousticSim(self._MainApp,bDryRun=True)
         FILENAMES = dry.run()
-        
+
         self._FullSolName=FILENAMES['FilesSkull']
         self._WaterSolName=FILENAMES['FilesWater']
 
-        bCalcFields=False
-        bPrexistingFiles=True
+    def _ExistingSimulationFiles(self):
         for sskull,swater in zip(self._FullSolName,self._WaterSolName):
             if not(os.path.isfile(sskull) and os.path.isfile(swater)):
-                bPrexistingFiles=False
-                break
-            
-        if bPrexistingFiles:
-            #we can use the first entry, this is valid for all files in the list
-            Skull=ReadFromH5py(self._FullSolName[0])
-            XSteering=Skull['XSteering']
-            YSteering=Skull['YSteering']
-            ZSteering=Skull['ZSteering']
-            if 'RotationZ' in Skull:
-                RotationZ=Skull['RotationZ']
-            else:
-                RotationZ=0.0
+                return False
+        return True
 
-            ret = QMessageBox.question(self,'', "Acoustic sim files already exist with:.\n"+
-                                    "XSteering=%3.2f\n" %(XSteering*1e3)+
-                                    "YSteering=%3.2f\n" %(YSteering*1e3)+
-                                    "ZSteering=%3.2f\n" %(ZSteering*1e3)+
-                                    "ZRotation=%3.2f\n" %(RotationZ)+
-                                    "TxMechanicalAdjustmentX=%3.2f\n" %(Skull['TxMechanicalAdjustmentX']*1e3)+
-                                    "TxMechanicalAdjustmentY=%3.2f\n" %(Skull['TxMechanicalAdjustmentY']*1e3)+
-                                    "TxMechanicalAdjustmentZ=%3.2f\n" %(Skull['TxMechanicalAdjustmentZ']*1e3)+
-                                    "Do you want to recalculate?\nSelect No to reload",
-                QMessageBox.Yes | QMessageBox.No)
-
-            if ret == QMessageBox.Yes:
-                bCalcFields=True
-            else:
-                self.Widget.XSteeringSpinBox.setValue(XSteering*1e3)
-                self.Widget.YSteeringSpinBox.setValue(YSteering*1e3)
-                self.Widget.ZSteeringSpinBox.setValue(ZSteering*1e3)
-                self.Widget.ZRotationSpinBox.setValue(RotationZ)
-                try:
-                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
-                except:
-                    self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'].astype(int))
-                if 'DistanceConeToFocus' in Skull and hasattr(self.Widget,'DistanceConeToFocusSpinBox'):
-                    self.Widget.DistanceConeToFocusSpinBox.setValue(Skull['DistanceConeToFocus']*1e3)
-                if 'zLengthBeyonFocalPoint' in Skull:
-                    self.Widget.MaxDepthSpinBox.setValue(Skull['zLengthBeyonFocalPoint']*1e3)
-                self.Widget.XMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentX']*1e3)
-                self.Widget.YMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentY']*1e3)
-                self.Widget.ZMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentZ']*1e3)
+    def _PromptReuseOrRecalc(self):
+        #we can use the first entry, this is valid for all files in the list
+        Skull=ReadFromH5py(self._FullSolName[0])
+        XSteering=Skull['XSteering']
+        YSteering=Skull['YSteering']
+        ZSteering=Skull['ZSteering']
+        if 'RotationZ' in Skull:
+            RotationZ=Skull['RotationZ']
         else:
-            bCalcFields = True
-        self._bRecalculated = True
-        if bCalcFields:
-            self._MainApp.Widget.tabWidget.setEnabled(False)
-            self.thread = QThread()
-            self.worker = RunAcousticSim(self._MainApp)
-            self.worker.moveToThread(self.thread)
-            self.thread.started.connect(self.worker.run)
-            self.worker.finished.connect(self.EndSimulation)
-            self.worker.finished.connect(self._MainApp.SendTelemetry)
-            self.worker.finished.connect(self.thread.quit)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.thread.finished.connect(self.thread.deleteLater)
+            RotationZ=0.0
 
-            self.worker.endError.connect(self.NotifyError)
-            self.worker.endError.connect(self._MainApp.SendTelemetry)
-            self.worker.endError.connect(self.thread.quit)
-            self.worker.endError.connect(self.worker.deleteLater)
+        ret = QMessageBox.question(self,'', "Acoustic sim files already exist with:.\n"+
+                                "XSteering=%3.2f\n" %(XSteering*1e3)+
+                                "YSteering=%3.2f\n" %(YSteering*1e3)+
+                                "ZSteering=%3.2f\n" %(ZSteering*1e3)+
+                                "ZRotation=%3.2f\n" %(RotationZ)+
+                                "TxMechanicalAdjustmentX=%3.2f\n" %(Skull['TxMechanicalAdjustmentX']*1e3)+
+                                "TxMechanicalAdjustmentY=%3.2f\n" %(Skull['TxMechanicalAdjustmentY']*1e3)+
+                                "TxMechanicalAdjustmentZ=%3.2f\n" %(Skull['TxMechanicalAdjustmentZ']*1e3)+
+                                "Do you want to recalculate?\nSelect No to reload",
+            QMessageBox.Yes | QMessageBox.No)
 
-            self.worker.logTelemetry.connect(self._MainApp.LogTelemetry)
+        if ret == QMessageBox.Yes:
+            return True
+        self.Widget.XSteeringSpinBox.setValue(XSteering*1e3)
+        self.Widget.YSteeringSpinBox.setValue(YSteering*1e3)
+        self.Widget.ZSteeringSpinBox.setValue(ZSteering*1e3)
+        self.Widget.ZRotationSpinBox.setValue(RotationZ)
+        try:
+            self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'])
+        except:
+            self.Widget.RefocusingcheckBox.setChecked(Skull['bDoRefocusing'].astype(int))
+        if 'DistanceConeToFocus' in Skull and hasattr(self.Widget,'DistanceConeToFocusSpinBox'):
+            self.Widget.DistanceConeToFocusSpinBox.setValue(Skull['DistanceConeToFocus']*1e3)
+        if 'zLengthBeyonFocalPoint' in Skull:
+            self.Widget.MaxDepthSpinBox.setValue(Skull['zLengthBeyonFocalPoint']*1e3)
+        self.Widget.XMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentX']*1e3)
+        self.Widget.YMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentY']*1e3)
+        self.Widget.ZMechanicSpinBox.setValue(Skull['TxMechanicalAdjustmentZ']*1e3)
+        return False
 
-            self.thread.start()
-            self._MainApp.showClockDialog()
-        else:
-            self.UpdateAcResults()
+    def _CreateAcousticWorker(self):
+        return RunAcousticSim(self._MainApp)
 
-        
+    def _SimulationFinishedSlot(self):
+        return self.EndSimulation
+
+
     def GetExport(self):
         Export=super().GetExport()
         Export['Refocusing']=self.Widget.RefocusingcheckBox.isChecked()
@@ -257,256 +232,132 @@ class BabelBasePhaseArray(BabelBaseTx):
             
         self.UpdateAcResults()
 
-    def _showMatplotlibVisualization(self):
-        if self._bRecalculated:
-            self._AcResults =[]
-            #this will generate a modified trajectory file
-            if self.Widget.ShowWaterResultscheckBox.isEnabled()== False:
-                self.Widget.ShowWaterResultscheckBox.setEnabled(True)
-            if self.Widget.HideMarkscheckBox.isEnabled()== False:
-                self.Widget.HideMarkscheckBox.setEnabled(True)
-            
-            for fwater,fskull in zip(self._WaterSolName,self._FullSolName):
-                Skull=ReadFromH5py(fskull)
-                Water=ReadFromH5py(fwater)
+    # Phased arrays use a larger figure and select the displayed field from the
+    # multifocus column set; the per-trajectory tab/render plumbing is inherited
+    # from BabelBaseTx.
+    def _AcResultFigure(self):
+        return Figure(figsize=(14, 12))
 
-                if 'SDR' in Skull and hasattr(self.Widget,'SDRLabel'):
-                    self._SDR=Skull['SDR']
-                    self.Widget.SDRLabel.setText('%0.2f' %(Skull['SDR']))
-                    
-                if Skull['bDoRefocusing']:
-                    SelP='p_amp_refocus'
-                else:
-                    SelP='p_amp'
+    def _GetActiveFields(self, panel):
+        if hasattr(self.Widget, 'SelCombinationDropDown'):
+            i = self.Widget.SelCombinationDropDown.currentIndex()
+            if i < 0:
+                i = 0
+        else:
+            i = 0
+        return panel['IWaterCol'][i], panel['ISkullCol'][i]
 
-                keys=[SelP,'MaterialMap']
-                if 'AirMask' in Skull:
-                    keys.append('AirMask')
-                for t in keys:
-                    Skull[t]=np.ascontiguousarray(np.flip(Skull[t],axis=2))
+    def _LoadAcResultData(self, panel):
+        '''Read all steering results for this trajectory and stash the field columns.'''
+        AcResults = []
+        for fwater, fskull in zip(self._WaterSolName, self._FullSolName):
+            Skull = ReadFromH5py(fskull)
+            Water = ReadFromH5py(fwater)
 
-                for t in ['p_amp','MaterialMap']:
-                    Water[t]=np.ascontiguousarray(np.flip(Water[t],axis=2))
-                Water['p_amp'][:,:,0]=0.0
-                
-                entry={'Skull':Skull,'Water':Water}
-                
-                self._AcResults.append(entry)
-            
-            Water=self._AcResults[0]['Water']
-            Skull=self._AcResults[0]['Skull']
-            
+            if 'SDR' in Skull and hasattr(self.Widget, 'SDRLabel'):
+                self._SDR = Skull['SDR']
+                self.Widget.SDRLabel.setText('%0.2f' % (Skull['SDR']))
+                panel['SDR'] = Skull['SDR']
+
             if Skull['bDoRefocusing']:
-                SelP='p_amp_refocus'
+                SelP = 'p_amp_refocus'
             else:
-                SelP='p_amp'
-            
-            if self._MainApp.Config['bInUseWithBrainsight']:
-                if Skull['bDoRefocusing']:
-                    #we update the name to be loaded in BSight
-                    self._MainApp._BrainsightInput=self._MainApp._prefix_path+'FullElasticSolutionRefocus_Sub_NORM.nii.gz'
-                else:
-                    self._MainApp._BrainsightInput=self._MainApp._prefix_path+'FullElasticSolution_Sub_NORM.nii.gz'
-            self.ExportStep2Results(Skull)
+                SelP = 'p_amp'
 
-            LocTarget=Skull['TargetLocation']
-            print(LocTarget)
+            keys = [SelP, 'MaterialMap']
+            if 'AirMask' in Skull:
+                keys.append('AirMask')
+            for t in keys:
+                Skull[t] = np.ascontiguousarray(np.flip(Skull[t], axis=2))
 
-            DistanceToTarget=self.Widget.DistanceSkinLabel.property('UserData')
-            if 'DistanceConeToFocus' in Skull:
-                self._LastDistanceConeToFocus=Skull['DistanceConeToFocus']
+            for t in ['p_amp', 'MaterialMap']:
+                Water[t] = np.ascontiguousarray(np.flip(Water[t], axis=2))
+            Water['p_amp'][:, :, 0] = 0.0
+
+            AcResults.append({'Skull': Skull, 'Water': Water})
+
+        Water = AcResults[0]['Water']
+        Skull = AcResults[0]['Skull']
+
+        if Skull['bDoRefocusing']:
+            SelP = 'p_amp_refocus'
+        else:
+            SelP = 'p_amp'
+
+        if self._MainApp.Config['bInUseWithBrainsight']:
+            if Skull['bDoRefocusing']:
+                #we update the name to be loaded in BSight
+                self._MainApp._BrainsightInput = self._MainApp._prefix_path[self._TrajectoryNumber] + 'FullElasticSolutionRefocus_Sub_NORM.nii.gz'
             else:
-                self._LastDistanceConeToFocus=0.0
+                self._MainApp._BrainsightInput = self._MainApp._prefix_path[self._TrajectoryNumber] + 'FullElasticSolution_Sub_NORM.nii.gz'
+        self.ExportStep2Results(Skull)
 
-            Water['z_vec']*=1e3
-            Skull['z_vec']*=1e3
-            Skull['x_vec']*=1e3
-            Skull['y_vec']*=1e3
-            
-            DensityMap=Skull['Material'][:,0][Skull['MaterialMap']]
-            SoSMap=    Skull['Material'][:,1][Skull['MaterialMap']]
-            
-            Skull['MaterialMap'][Skull['MaterialMap']==3]=2
-            Skull['MaterialMap'][Skull['MaterialMap']==4]=3
+        LocTarget = Skull['TargetLocation']
+        print(LocTarget)
 
-            self._ISkullCol=[]
-            self._IWaterCol=[]
-            sz=self._AcResults[0]['Water']['p_amp'].shape
-            AllSkull=np.zeros((sz[0],sz[1],sz[2],len(self._AcResults)))
-            AllWater=np.zeros((sz[0],sz[1],sz[2],len(self._AcResults)))
-            for n,entry in enumerate(self._AcResults):
-                ISkull=entry['Skull'][SelP]**2/2/DensityMap/SoSMap/1e4
-                if not self._MainApp.Config['bForceHomogenousMedium']:
-                    ISkull[Skull['MaterialMap']<3]=0
-                IWater=entry['Water']['p_amp']**2/2/Water['Material'][0,0]/Water['Material'][0,1]
-                
-                AllSkull[:,:,:,n]=ISkull
-                AllWater[:,:,:,n]=IWater
-                ISkull/=ISkull.max()
-                IWater/=IWater.max()
-                
-                self._ISkullCol.append(ISkull)
-                self._IWaterCol.append(IWater)
-            #now we add the max projection of fields, we add it at the top
-            AllSkull=AllSkull.max(axis=3)
-            AllSkull/=AllSkull.max()
-            AllWater=AllWater.max(axis=3)
-            AllWater/=AllWater.max()
-            
-            self._ISkullCol.insert(0,AllSkull)
-            self._IWaterCol.insert(0,AllWater)
-            
-            dz=np.diff(Skull['z_vec']).mean()
-            Zvec=Skull['z_vec'].copy()
-            Zvec-=Zvec[LocTarget[2]]
-            Zvec+=DistanceToTarget
-            XX,ZZ=np.meshgrid(Skull['x_vec'],Zvec)
-            self._XX = XX
-            self._ZZX = ZZ
-            YY,ZZ=np.meshgrid(Skull['y_vec'],Zvec)
-            self._YY = YY
-            self._ZZY = ZZ
-
-            self.Widget.IsppaScrollBars.set_default_values(LocTarget,Skull['x_vec']-Skull['x_vec'][LocTarget[0]],Skull['y_vec']-Skull['y_vec'][LocTarget[1]])
-
-            self._Skull = Skull
-            
-            self._DistanceToTarget = DistanceToTarget
-
-            if hasattr(self,'_figAcField'):
-                children = []
-                for i in range(self._layout.count()):
-                    child = self._layout.itemAt(i).widget()
-                    if child:
-                        children.append(child)
-                for child in children:
-                    child.deleteLater()
-                delattr(self,'_figAcField')
-                self.Widget.AcField_plot1.repaint()
-        
-        SelY, SelX = self.Widget.IsppaScrollBars.get_scroll_values()
-
-        if hasattr(self.Widget,'SelCombinationDropDown'):
-            IWater = self._IWaterCol[self.Widget.SelCombinationDropDown.currentIndex()]
-            ISkull = self._ISkullCol[self.Widget.SelCombinationDropDown.currentIndex()]
+        DistanceToTarget = self.Widget.DistanceSkinLabel.property('UserData')
+        if 'DistanceConeToFocus' in Skull:
+            self._LastDistanceConeToFocus = Skull['DistanceConeToFocus']
         else:
-            IWater = self._IWaterCol[0]
-            ISkull = self._ISkullCol[0]
-        #we need to declare these for compatibility for parent functions
-        self._IWater = IWater
-        self._ISkull = ISkull
-        
-        Total_Distance,X_dist,Y_dist,Z_dist=self.CalculateDistancesTarget()
-        self.Widget.DistanceTargetLabel.setText('[%2.1f, %2.1f ,%2.1f]' %(X_dist,Y_dist,Z_dist))
+            self._LastDistanceConeToFocus = 0.0
 
-        if self.Widget.ShowWaterResultscheckBox.isChecked():
-            sliceXZ=IWater[:,SelY,:]
-            sliceYZ = IWater[SelX,:,:]
-        else:
-            sliceXZ=ISkull[:,SelY,:]
-            sliceYZ =ISkull[SelX,:,:]
+        Water['z_vec'] *= 1e3
+        Skull['z_vec'] *= 1e3
+        Skull['x_vec'] *= 1e3
+        Skull['y_vec'] *= 1e3
 
-        if hasattr(self,'_figAcField'):
-            if hasattr(self,'_imContourf1'):
-                listObjects=[self._imContourf1,self._imContourf2]
-                if not self._MainApp.Config['bForceHomogenousMedium']:
-                    listObjects+=[self._contour1,self._contour2]
-                    if 'AirMask' in self._Skull:
-                        listObjects+=[self._airmask1,self._airmask2]
-                for c in listObjects:
-                    try: #this is for old Matplotlib
-                        for coll in c.collections:
-                            coll.remove()
-                    except:
-                        c.remove()
-                del self._imContourf1
-                del self._imContourf2
-                if not self._MainApp.Config['bForceHomogenousMedium']:
-                    del self._contour1
-                    del self._contour2
-                    if 'AirMask' in self._Skull:
-                        del self._airmask1
-                        del self._airmask2 
+        DensityMap = Skull['Material'][:, 0][Skull['MaterialMap']]
+        SoSMap = Skull['Material'][:, 1][Skull['MaterialMap']]
 
-            self._imContourf1=self._static_ax1.contourf(self._XX,self._ZZX,sliceXZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
+        Skull['MaterialMap'][Skull['MaterialMap'] == 3] = 2
+        Skull['MaterialMap'][Skull['MaterialMap'] == 4] = 3
+
+        ISkullCol = []
+        IWaterCol = []
+        sz = AcResults[0]['Water']['p_amp'].shape
+        AllSkull = np.zeros((sz[0], sz[1], sz[2], len(AcResults)))
+        AllWater = np.zeros((sz[0], sz[1], sz[2], len(AcResults)))
+        for n, entry in enumerate(AcResults):
+            ISkull = entry['Skull'][SelP] ** 2 / 2 / DensityMap / SoSMap / 1e4
             if not self._MainApp.Config['bForceHomogenousMedium']:
-                self._contour1 = self._static_ax1.contour(self._XX,self._ZZX,self._Skull['MaterialMap'][:,SelY,:].T,[0,1,2], colors ='k',linestyles = ':')
-                if 'AirMask' in self._Skull:
-                    AirMap=self._Skull['AirMask'][:,SelY,:].T
-                    AirMap=np.ma.masked_where(AirMap==0 , AirMap)
-                    self._airmask1 = self._static_ax1.contourf(self._XX,self._ZZX,AirMap,[0,1],cmap=plt.cm.gray_r)
+                ISkull[Skull['MaterialMap'] < 3] = 0
+            IWater = entry['Water']['p_amp'] ** 2 / 2 / Water['Material'][0, 0] / Water['Material'][0, 1]
 
-            self._imContourf2=self._static_ax2.contourf(self._YY,self._ZZY,sliceYZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
-            if not self._MainApp.Config['bForceHomogenousMedium']:
-                self._contour2 = self._static_ax2.contour(self._YY,self._ZZY,self._Skull['MaterialMap'][SelX,:,:].T,[0,1,2], colors ='k',linestyles = ':')
-                if 'AirMask' in self._Skull:
-                    AirMap=self._Skull['AirMask'][SelX,:,:].T
-                    AirMap=np.ma.masked_where(AirMap==0 , AirMap)
-                    self._airmask2 = self._static_ax2.contourf(self._YY,self._ZZY,AirMap,[0,1],cmap=plt.cm.gray_r)
+            AllSkull[:, :, :, n] = ISkull
+            AllWater[:, :, :, n] = IWater
+            ISkull /= ISkull.max()
+            IWater /= IWater.max()
 
-            self._figAcField.canvas.draw_idle()
-        else:
-            self._figAcField=Figure(figsize=(14, 12))
+            ISkullCol.append(ISkull)
+            IWaterCol.append(IWater)
+        #now we add the max projection of fields, we add it at the top
+        AllSkull = AllSkull.max(axis=3)
+        AllSkull /= AllSkull.max()
+        AllWater = AllWater.max(axis=3)
+        AllWater /= AllWater.max()
 
-            if not hasattr(self,'_layout'):
-                self._layout = QVBoxLayout(self.Widget.AcField_plot1)
+        ISkullCol.insert(0, AllSkull)
+        IWaterCol.insert(0, AllWater)
 
-            self.static_canvas = FigureCanvas(self._figAcField)
-            toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
-            self._layout.addWidget(toolbar)
-            self._layout.addWidget(self.static_canvas)
-            # Each plot box is centered on its scrollbar (left col x=0.25, right
-            # col x=0.75). A dedicated colorbar axis keeps the plot itself
-            # centered (plt.colorbar(ax=...) would shrink/shift the plot).
-            fig=self.static_canvas.figure
-            static_ax1 = fig.add_axes([0.10, 0.12, 0.30, 0.80])
-            cax1       = fig.add_axes([0.43, 0.12, 0.015, 0.80])
-            static_ax2 = fig.add_axes([0.60, 0.12, 0.30, 0.80])
-            cax2       = fig.add_axes([0.93, 0.12, 0.015, 0.80])
-            self._static_ax1 = static_ax1
-            self._static_ax2 = static_ax2
+        Zvec = Skull['z_vec'].copy()
+        Zvec -= Zvec[LocTarget[2]]
+        Zvec += DistanceToTarget
+        XX, ZZX = np.meshgrid(Skull['x_vec'], Zvec)
+        YY, ZZY = np.meshgrid(Skull['y_vec'], Zvec)
 
-            self._imContourf1=static_ax1.contourf(self._XX,self._ZZX,sliceXZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
-            h=plt.colorbar(self._imContourf1,cax=cax1)
-            h.set_label('$I_{\mathrm{SPPA}}$ (normalized)')
-            if not self._MainApp.Config['bForceHomogenousMedium']:
-                self._contour1 = static_ax1.contour(self._XX,self._ZZX,self._Skull['MaterialMap'][:,SelY,:].T,[0,1,2], colors ='k',linestyles = ':')
-                if 'AirMask' in self._Skull:
-                    AirMap=self._Skull['AirMask'][:,SelY,:].T
-                    AirMap=np.ma.masked_where(AirMap==0 , AirMap)
-                    self._airmask1 = static_ax1.contourf(self._XX,self._ZZX,AirMap,[0,1],cmap=plt.cm.gray_r)
-            static_ax1.set_aspect('equal')
-            static_ax1.set_xlabel('X mm')
-            static_ax1.set_ylabel('Z mm')
-            static_ax1.invert_yaxis()
-            self._marker1,=static_ax1.plot(0,self._DistanceToTarget,'+k',markersize=18)
-                
-            self._imContourf2=static_ax2.contourf(self._YY,self._ZZY,sliceYZ.T,np.arange(2,22,2)/20,cmap=plt.cm.jet)
-            h=plt.colorbar(self._imContourf1,cax=cax2)
-            h.set_label('$I_{\mathrm{SPPA}}$ (normalized)')
-            if not self._MainApp.Config['bForceHomogenousMedium']:
-                self._contour2 = static_ax2.contour(self._YY,self._ZZY,self._Skull['MaterialMap'][SelX,:,:].T,[0,1,2], colors ='k',linestyles = ':')
-                if 'AirMask' in self._Skull:
-                    AirMap=self._Skull['AirMask'][SelX,:,:].T
-                    AirMap=np.ma.masked_where(AirMap==0 , AirMap)
-                    self._airmask2 = static_ax2.contourf(self._YY,self._ZZY,AirMap,[0,1],cmap=plt.cm.gray_r)
-            static_ax2.set_aspect('equal')
-            static_ax2.set_xlabel('Y mm')
-            static_ax2.set_ylabel('Z mm')
-            static_ax2.invert_yaxis()
-            self._marker2,=static_ax2.plot(0,self._DistanceToTarget,'+k',markersize=18)
-        
-        self._figAcField.set_facecolor(self._MainApp._BackgroundColorFigures)
+        # Keep self._AcResults pointing at the active trajectory for any external use.
+        self._AcResults = AcResults
+        panel.update({
+            'AcResults': AcResults, 'Skull': Skull,
+            'ISkullCol': ISkullCol, 'IWaterCol': IWaterCol,
+            'XX': XX, 'ZZX': ZZX, 'YY': YY, 'ZZY': ZZY,
+            'DistanceToTarget': DistanceToTarget, 'LocTarget': LocTarget,
+            'xvec': Skull['x_vec'] - Skull['x_vec'][LocTarget[0]],
+            'yvec': Skull['y_vec'] - Skull['y_vec'][LocTarget[1]],
+            'FullSolName': self._FullSolName, 'WaterSolName': self._WaterSolName,
+            'LastDistanceConeToFocus': self._LastDistanceConeToFocus,
+        })
 
-        mc=[0.0,0.0,0.0,1.0]
-        if self.Widget.HideMarkscheckBox.isChecked():
-             mc[3] = 0.0
-        self._marker1.set_markerfacecolor(mc)
-        self._marker2.set_markerfacecolor(mc)
-
-        self.Widget.IsppaScrollBars.update_labels(SelX, SelY)
-        self._bRecalculated = False
-        
     @Slot()
     def UpdateAcResults(self):
         self._MainApp.SetSuccesCode()
@@ -523,21 +374,23 @@ class BabelBasePhaseArray(BabelBaseTx):
             NiftiSkull=nibabel.load(self._FullSolName[0].split('_DataForSim.h5')[0]+'_FullElasticSolution_Sub_NORM.nii.gz')
             NiftiWater=nibabel.load(self._FullSolName[0].split('_DataForSim.h5')[0]+'_Water_FullElasticSolution_Sub_NORM.nii.gz')
 
-        self._MainApp.UpdateNiftiAcResults(NiftiSkull,NiftiWater)
+        self._MainApp.UpdateNiftiAcResults(NiftiSkull,NiftiWater,self._TrajectoryNumber)
 
         
     
     def EnableMultiPoint(self,MultiPoint):
-        self.Widget.MultifocusLabel.setVisible(True)
-        self.Widget.SelCombinationDropDown.setVisible(True)
-        while self.Widget.SelCombinationDropDown.count()>0:
-            self.Widget.SelCombinationDropDown.removeItem(0)
-        self.Widget.SelCombinationDropDown.addItem('ALL')
         print('MultiPoint',MultiPoint)
-        for c in MultiPoint:
-            self.Widget.SelCombinationDropDown.addItem('X:%2.1f Y:%2.1f Z:%2.1f' %(c['X']*1e3,c['Y']*1e3,c['Z']*1e3))
+        # Apply the multifocus dropdown to every trajectory tab's form.
+        for form in self._Widgets:
+            form.MultifocusLabel.setVisible(True)
+            form.SelCombinationDropDown.setVisible(True)
+            while form.SelCombinationDropDown.count()>0:
+                form.SelCombinationDropDown.removeItem(0)
+            form.SelCombinationDropDown.addItem('ALL')
+            for c in MultiPoint:
+                form.SelCombinationDropDown.addItem('X:%2.1f Y:%2.1f Z:%2.1f' %(c['X']*1e3,c['Y']*1e3,c['Z']*1e3))
+            form.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateAcResults)
         self._MultiPoint = MultiPoint
-        self.Widget.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateAcResults)
 
 
 class RunAcousticSim(QObject):
@@ -556,7 +409,7 @@ class RunAcousticSim(QObject):
         COMPUTING_BACKEND=self._mainApp.Config['ComputingBackend']
         basedir,ID=os.path.split(os.path.split(self._mainApp.Config['T1WIso'])[0])
         basedir+=os.sep
-        Target=[self._mainApp.Config['ID']+'_'+self._mainApp.Config['TxSystem']]
+        Target=[self._mainApp.Config['ID'][self._mainApp.AcSim._TrajectoryNumber]+'_'+self._mainApp.Config['TxSystem']]
 
         InputSim=self._mainApp._outnameMask
 

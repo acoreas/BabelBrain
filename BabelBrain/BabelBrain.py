@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLineEdit,
     QMessageBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QLabel
@@ -455,10 +456,18 @@ class BabelBrain(QWidget):
         self.Config['CoregCT_MRI']=widget.ui.CoregCTcomboBox.currentIndex()
         self.Config['CT_or_ZTE_input']=CT_or_ZTE_input
         self.Config['CTMapCombo']=CTMapCombo
+        self.Config['NumberTransducers']=1 
         if self.Config['TrajectoryType']=='brainsight':
-            self.Config['ID'] = ReadTrajectoryBrainsight(self.Config['Mat4Trajectory'],bGetID=True)[1]
+            ID=ReadTrajectoryBrainsight(self.Config['Mat4Trajectory'],bGetID=True)[1]
+            if type(ID) is list:
+                self.Config['NumberTransducers']=len(ID) #multiple devices
+            else:
+                ID=[ID] #we enforce a list of 1 ID to simpliy processing
+            self.Config['ID'] = ID
         else:
-            self.Config['ID'] = os.path.splitext(os.path.split(self.Config['Mat4Trajectory'])[1])[0]
+            #for 3DSlicer, we will limit to only one - the time we found a better strategy
+            self.Config['ID'] = [os.path.splitext(os.path.split(self.Config['Mat4Trajectory'])[1])[0]]
+            
 
         #filenames when saving results for Brainsight
         self.Config['bInUseWithBrainsight']= bInUseWithBrainsight #this will be use to sync input and output with Brainsight
@@ -815,12 +824,13 @@ class BabelBrain(QWidget):
         self.Widget.vtkVisualizationqPushButton.setEnabled(False)
 
     def UpdateWindowTitle(self):
+        IDTitle='+'.join(self.Config['ID'])
         self.setWindowTitle('BabelBrain V'+
                             self.Config['version'] +' - ' + 
-                            self.Config['ID'] + ' - ' + 
+                            IDTitle + ' - ' + 
                             self.Config['TxSystem'] + ' - ' + 
                             os.path.split(self.Config['ThermalProfile'])[1].split('.yaml')[0])
-        self.Widget.IDLabel.setText(self.Config['ID'])
+        self.Widget.IDLabel.setText(IDTitle)
         self.Widget.TXLabel.setText(self.Config['TxSystem'])
         self.Widget.ThermalProfileLabel.setText(os.path.split(self.Config['ThermalProfile'])[1].split('.yaml')[0])
     
@@ -896,8 +906,33 @@ class BabelBrain(QWidget):
         self._Frequency =Frequency
         self._BasePPW =BasePPW
 
-        self._prefix= self.Config['ID'] + '_' + self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)
+    
+        #we prepare paths
+        self._prefix=[ p + '_' + self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW) for p in self.Config['ID']]
+        self._merged_prefix = '+'.join(self.Config['ID']) + self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)
+        self._prefix_path=[self.Config['OutputFilesPath']+os.sep+p for p in self._prefix]
+        self._merged_prefix_path = self.Config['OutputFilesPath']+os.sep+self._merged_prefix
+        self._outnameMask=[p+'BabelViscoInput.nii.gz' for p in self._prefix_path]
+        self._T1W_resampled_fname=[p.split('BabelViscoInput.nii.gz')[0]+'T1W_Resampled.nii.gz' for p in self._outnameMask]
         
+        self._MaskNib =[None]*len(self.Config['ID'])
+        self._T1WNib  =[None]*len(self.Config['ID'])
+        self._NiftiCT =[None]*len(self.Config['ID'])
+        self._NiftiAirMask =[None]*len(self.Config['ID'])
+        self.FinalMaskRaw =[None]*len(self.Config['ID'])
+        self._FinalMask =[None]*len(self.Config['ID'])
+        self._T1WDataRaw =[None]*len(self.Config['ID'])
+        self._NiftiSkull =[None]*len(self.Config['ID'])
+        self._NiftiWater =[None]*len(self.Config['ID'])
+
+        combinedID='+'.join(self.Config['ID'])
+        self._trackingtimefile = self.Config['OutputFilesPath']+os.sep+combinedID+'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)+'ExecutionTimes.yml'
+
+        self._TrajectoryNumber=0
+        #we run first trajectory, most cases it will be only one
+        self.ExecuteTrajectory()
+
+    def ExecuteTrajectory(self):
         
         basedir = self.Config['OutputFilesPath']
         if not os.path.isdir(basedir):
@@ -910,16 +945,12 @@ class BabelBrain(QWidget):
                 msgBox.exec()
                 raise
                 
-        self._prefix_path=basedir+os.sep+self._prefix
-        self._outnameMask=self._prefix_path+'BabelViscoInput.nii.gz'
-        self._trackingtimefile = self._prefix_path+'ExecutionTimes.yml'
         if not os.path.isfile(self._trackingtimefile):
             self.UpdateComputationalTime('domain',0.0) #this will initalize the trackig file
         
-        print('outname',self._outnameMask)
-        self._T1W_resampled_fname=self._outnameMask.split('BabelViscoInput.nii.gz')[0]+'T1W_Resampled.nii.gz'
+        print('outname',self._outnameMask[self._TrajectoryNumber])
         bCalcMask=False
-        if os.path.isfile(self._outnameMask) and os.path.isfile(self._T1W_resampled_fname):
+        if os.path.isfile(self._outnameMask[self._TrajectoryNumber]) and os.path.isfile(self._T1W_resampled_fname[self._TrajectoryNumber]):
             # Parent to self.Widget (the styled MainForm) so the dialog inherits
             # the compact _FORM_QSS; self is the top-level app and carries no
             # stylesheet of its own.
@@ -932,6 +963,9 @@ class BabelBrain(QWidget):
 
         if bCalcMask:
             #We run the Background
+            # Reset the chaining flag; VerifyResults sets it True only on a
+            # successful run that should be followed by another trajectory.
+            self._bRunNextTrajectory = False
             self.thread = QThread()
             self.worker = RunMaskGeneration(self)
             self.worker.moveToThread(self.thread)
@@ -941,8 +975,13 @@ class BabelBrain(QWidget):
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
+            # Chain the next trajectory only once the thread's event loop has
+            # actually exited (thread.finished), never from worker.finished —
+            # at that earlier point thread.quit() is still queued and the
+            # thread is alive, so starting a new run would deadlock/crash.
+            self.thread.finished.connect(self._StartNextTrajectory)
 
-            
+
             self.worker.endError.connect(self.NotifyError)
             self.worker.endError.connect(self.SendTelemetry)
             self.worker.endError.connect(self.thread.quit)
@@ -956,14 +995,21 @@ class BabelBrain(QWidget):
 
         else:
             self.UpdateMask()
+            # Reload path: no worker thread is spawned, so advance to the next
+            # trajectory directly.
+            if self._TrajectoryNumber<len(self.Config['ID'])-1:
+                self._TrajectoryNumber+=1
+                self.ExecuteTrajectory()
 
 
     #this will modify the coordinates of the trajectory
-    def ExportTrajectory(self,CorX=0.0,CorY=0.0,CorZ=0.0):
+    def ExportTrajectory(self,CorX=0.0,CorY=0.0,CorZ=0.0,Ntraj=0):
         newFName=os.path.join(self.Config['OutputFilesPath'],'_mod_'+os.path.split(self.Config['Mat4Trajectory'])[1])
             
         if self.Config['TrajectoryType']=='brainsight':
             OrigTraj=ReadTrajectoryBrainsight(self.Config['Mat4Trajectory'])
+            if len(OrigTraj.shape)==3:
+                OrigTraj=OrigTraj[:,:,Ntraj]
             OrigTraj[0,3]-=CorX
             OrigTraj[1,3]-=CorY
             OrigTraj[2,3]-=CorZ
@@ -1031,26 +1077,92 @@ class BabelBrain(QWidget):
                     self.UpdateMask(bDeleteOnly=True)
                     return
         self.UpdateMask()
+        # Only flag that the next trajectory should run; the actual launch is
+        # deferred to _StartNextTrajectory, fired by thread.finished once the
+        # current worker thread has fully stopped.
+        if self._TrajectoryNumber<len(self.Config['ID'])-1:
+            self._bRunNextTrajectory = True
+
+    def _StartNextTrajectory(self):
+        '''
+        Invoked from thread.finished (current worker thread fully stopped).
+        Carries over to the next trajectory if VerifyResults flagged one.
+        '''
+        if getattr(self,'_bRunNextTrajectory',False):
+            self._bRunNextTrajectory = False
+            self._TrajectoryNumber += 1
+            self.ExecuteTrajectory()
+
+    def _ensurePlanningTabs(self):
+        '''
+        Build (or rebuild) the per-trajectory tab container inside USMask.
+
+        One tab is created per entry in self.Config['ID'], using the ID as the
+        tab title. Each tab owns its own matplotlib figure/canvas; the artists
+        and per-trajectory state are stored in self._trajPanels[i]. With a single
+        trajectory (the common case) the tab bar and pane frame are hidden so the
+        view matches the original single-panel look.
+        '''
+        IDs = list(self.Config['ID'])
+        if not hasattr(self,'_planningTabs'):
+            outer = QVBoxLayout(self.Widget.USMask)
+            outer.setContentsMargins(0, 0, 0, 0)
+            self._planningTabs = QTabWidget(self.Widget.USMask)
+            # Keep trajectory names fully visible: never elide the labels, and
+            # let the bar scroll (rather than squeeze tabs into "...") when many
+            # trajectories don't fit the available width.
+            tab_bar = self._planningTabs.tabBar()
+            tab_bar.setElideMode(Qt.ElideNone)
+            tab_bar.setExpanding(False)
+            self._planningTabs.setUsesScrollButtons(True)
+            outer.addWidget(self._planningTabs)
+            self._trajPanels = []
+            self._trajPanelIDs = None
+
+        if self._trajPanelIDs != IDs:
+            # Trajectory set changed — discard old tabs and rebuild from scratch.
+            while self._planningTabs.count():
+                w = self._planningTabs.widget(0)
+                self._planningTabs.removeTab(0)
+                if w is not None:
+                    w.deleteLater()
+            self._trajPanels = []
+            for tid in IDs:
+                tab = QWidget()
+                lay = QVBoxLayout(tab)
+                lay.setContentsMargins(0, 0, 0, 0)
+                self._planningTabs.addTab(tab, str(tid))
+                self._trajPanels.append({'layout': lay, 'figure': None})
+            self._trajPanelIDs = IDs
+
+        # Single trajectory (the common case): hide the tab bar and drop the pane
+        # frame so Step 1 looks like the original single-panel view.  Several
+        # trajectories: show the tab bar with only a top line under the tab row.
+        if len(IDs) == 1:
+            self._planningTabs.tabBar().setVisible(False)
+            self._planningTabs.setStyleSheet("QTabWidget::pane { border: 0px; }")
+        else:
+            self._planningTabs.tabBar().setVisible(True)
+            self._planningTabs.setStyleSheet(
+                "QTabWidget::pane { border: 0px; border-top: 1px solid palette(mid); }")
 
     def _showMatplotlibVisualization(self,bDeleteOnly:bool):
         AirMask=None
         if self.Config['bUseCT']:
-            CTData=np.flip(self._NiftiCT.get_fdata(),axis=2)
-            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
-                AirMask=np.flip(self._NiftiAirMask.get_fdata(),axis=2)
+            CTData=np.flip(self._NiftiCT[self._TrajectoryNumber].get_fdata(dtype=np.float32),axis=2)
+            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path[self._TrajectoryNumber]+'AirRegions.nii.gz'):
+                AirMask=np.flip(self._NiftiAirMask[self._TrajectoryNumber].get_fdata(dtype=np.float32),axis=2)
         
-        FinalMask=np.flip(self.FinalMaskRaw,axis=2)
-        T1WData=np.flip(self._T1WDataRaw,axis=2)
-        self._T1WData=T1WData
-        voxSize=self._T1WNib.header.get_zooms()
-        x_vec=np.arange(self._T1WNib.shape[0])*voxSize[0]
+        FinalMask=np.flip(self.FinalMaskRaw[self._TrajectoryNumber],axis=2)
+        T1WData=np.flip(self._T1WDataRaw[self._TrajectoryNumber],axis=2)
+        voxSize=self._T1WNib[self._TrajectoryNumber].header.get_zooms()
+        x_vec=np.arange(self._T1WNib[self._TrajectoryNumber].shape[0])*voxSize[0]
         x_vec-=x_vec.mean()
-        y_vec=np.arange(self._T1WNib.shape[1])*voxSize[1]
+        y_vec=np.arange(self._T1WNib[self._TrajectoryNumber].shape[1])*voxSize[1]
         y_vec-=y_vec.mean()
-        z_vec=np.arange(self._T1WNib.shape[2])*voxSize[2]
+        z_vec=np.arange(self._T1WNib[self._TrajectoryNumber].shape[2])*voxSize[2]
         z_vec-=z_vec.mean()
         LocFocalPoint=np.array(np.where(FinalMask==5)).flatten()
-        self._LocFocalPoint=LocFocalPoint
         CMapXZ=FinalMask[:,LocFocalPoint[1],:].T.copy()
         CMapYZ=FinalMask[LocFocalPoint[0],:,:].T.copy()
         CMapXY=FinalMask[:,:,LocFocalPoint[2]].T.copy()
@@ -1083,17 +1195,19 @@ class BabelBrain(QWidget):
                         AirMask[LocFocalPoint[0],:,:].T,
                         AirMask[:,:,LocFocalPoint[2]].T]
                 
-        # --- tear down previous VTK viewer if present ---
-        if hasattr(self,'_slice_viewer'):
-            while (child := self._layout.takeAt(0)) is not None:
-                w = child.widget()
-                if w is not None:
-                    w.deleteLater()
-            del self._slice_viewer
+        # Render this trajectory's plots into its own tab so multiple
+        # trajectories can be visualized side by side. The active trajectory
+        # (self._TrajectoryNumber) selects which tab is (re)populated.
+        self._ensurePlanningTabs()
+        panel = self._trajPanels[self._TrajectoryNumber]
 
-        if hasattr(self,'_figMasks'):
-            while ((child := self._layout.takeAt(0)) != None):
-                child.widget().deleteLater()
+        # Clear any previous content (toolbar + canvas) from this tab.
+        while (child := panel['layout'].takeAt(0)) is not None:
+            w = child.widget()
+            if w is not None:
+                w.deleteLater()
+        panel['figure'] = None
+
         if bDeleteOnly:
             self.AcSim.setEnabled(False)
             self.ThermalSim.setEnabled(False)
@@ -1104,14 +1218,12 @@ class BabelBrain(QWidget):
         self._markers=[]
 
         self._figMasks = Figure(figsize=(18, 6))
-        if not hasattr(self,'_layout'):
-            self._layout = QVBoxLayout(self.Widget.USMask)
 
         self.static_canvas = FigureCanvas(self._figMasks)
-        
+
         toolbar=style_nav_toolbar(NavigationToolbar2QT(self.static_canvas,self))
-        self._layout.addWidget(toolbar)
-        self._layout.addWidget(self.static_canvas)
+        panel['layout'].addWidget(toolbar)
+        panel['layout'].addWidget(self.static_canvas)
 
         axes=self.static_canvas.figure.subplots(1,3)
         # Shrink the plotting area on the right (keeping the default left margin
@@ -1201,119 +1313,152 @@ class BabelBrain(QWidget):
         if not self.Widget.HideMarkscheckBox.isEnabled():
             self.Widget.HideMarkscheckBox.setEnabled(True)
 
+        # Persist this tab's artists/state so HideMarks and UpdateTransparency
+        # can update every trajectory's plots, not just the active one.
+        panel['figure']=self._figMasks
+        panel['canvas']=self.static_canvas
+        panel['axes']=axes
+        panel['imMasks']=self._imMasks
+        panel['imT1W']=self._imT1W
+        panel['imCtMasks']=self._imCtMasks
+        panel['markers']=self._markers
+        panel['T1WData']=T1WData
+        panel['LocFocalPoint']=LocFocalPoint
+
+        # Honor the current marker-visibility setting on the freshly built plots
+        # (transparency already applied above via the live scrollbar value).
+        self._applyMarkerVisibility(panel)
+
+        # Bring the just-computed trajectory's tab to the front.
+        self._planningTabs.setCurrentIndex(self._TrajectoryNumber)
+
     def UpdateMask(self, bDeleteOnly=False):
         self.hideClockDialog()
         self.Widget.tabWidget.setEnabled(True)
         self.AcSim.setEnabled(True)
         try:
-            Data=nibabel.load(self._outnameMask)
+            Data=nibabel.load(self._outnameMask[self._TrajectoryNumber])
         except:
             raise ValueError("BabelViscoInput file does not exist. This is most likely due to a crash related to high PPW, please explore using lower PPW")
-        self.FinalMaskRaw=Data.get_fdata()
-        self._FinalMask = np.flip(self.FinalMaskRaw,axis=2)
+        self.FinalMaskRaw[self._TrajectoryNumber]=Data.get_fdata(dtype=np.float32)
+        self._FinalMask[self._TrajectoryNumber] = np.flip(self.FinalMaskRaw[self._TrajectoryNumber],axis=2)
 
-        self._bSegmentedBrain = np.max(self.FinalMaskRaw)>5
+        self._bSegmentedBrain = np.max(self.FinalMaskRaw[self._TrajectoryNumber])>5
 
-        T1W=nibabel.load(self._T1W_resampled_fname)
-        self._T1WDataRaw=T1W.get_fdata()
+        T1W=nibabel.load(self._T1W_resampled_fname[self._TrajectoryNumber])
+        self._T1WDataRaw[self._TrajectoryNumber]=T1W.get_fdata(dtype=np.float32)
         
-        self._MaskNib=Data
-        self._T1WNib=T1W
+        self._MaskNib[self._TrajectoryNumber]=Data
+        self._T1WNib[self._TrajectoryNumber]=T1W
 
         if self.Config['bUseCT']:
-            self._NiftiCT=nibabel.load(self._prefix_path+'CT.nii.gz')
-            AllBoneHU = np.load(self._prefix_path+'CT-cal.npz')['UniqueHU']
-            CTData=AllBoneHU[self._NiftiCT.get_fdata().astype(int)]
-            self._NiftiCT=nibabel.Nifti1Image(CTData,affine=self._NiftiCT.affine,header=self._NiftiCT.header)               
-            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path+'AirRegions.nii.gz'):
-                self._NiftiAirMask=nibabel.load(self._prefix_path+'AirRegions.nii.gz')
+            self._NiftiCT[self._TrajectoryNumber]=nibabel.load(self._prefix_path[self._TrajectoryNumber]+'CT.nii.gz')
+            AllBoneHU = np.load(self._prefix_path[self._TrajectoryNumber]+'CT-cal.npz')['UniqueHU']
+            CTData=AllBoneHU[self._NiftiCT[self._TrajectoryNumber].get_fdata().astype(int)].astype(np.float32)
+            self._NiftiCT[self._TrajectoryNumber]=nibabel.Nifti1Image(CTData,affine=self._NiftiCT[self._TrajectoryNumber].affine,header=self._NiftiCT[self._TrajectoryNumber].header)               
+            if self.Config['bExtractAirRegions'] and os.path.exists(self._prefix_path[self._TrajectoryNumber]+'AirRegions.nii.gz'):
+                self._NiftiAirMask[self._TrajectoryNumber]=nibabel.load(self._prefix_path[self._TrajectoryNumber]+'AirRegions.nii.gz')
             
         self._BackgroundColorFigures=np.array(get_color_at(self.Widget.tabWidget,10,10))/255
-        self.Widget.vtkVisualizationqPushButton.setEnabled(True)
         self._showMatplotlibVisualization(bDeleteOnly)
+        if self._TrajectoryNumber == len(self.Config['ID'])-1:
+            self.Widget.vtkVisualizationqPushButton.setEnabled(True)
         if hasattr(self,'_vtk_visualization'):
             self._UpdateVTKDomain()
         self.UpdateAcousticTab()
+        self.AcSim._txTabs.setCurrentIndex(0) #we default always to first tab
 
 
     @Slot()
     def OpenVTKVisualization(self):
          # --- create / re-create the VTK viewer ---
         if not hasattr(self,'_vtk_visualization'):
-            self._vtk_visualization = NiftiViewerWindow()
+            self._vtk_visualization = NiftiViewerWindow(trajectories=self.Config['ID'])
             self._vtk_visualization.resize(1580, 500)
             self._vtk_visualization.show()
             self._vtk_visualization.setWindowTitle("VTK NIfTI Viewer — Multi-Volume")
             self._vtk_visualization.closed.connect(self._closingVtkVisualization)
-            self._UpdateVTKDomain()
+            self._UpdateVTKDomain(bFullyPopulate=True)
         else:
             self._vtk_visualization.raise_()
             self._vtk_visualization.activateWindow()
 
-    def _UpdateVTKDomain(self):
-        mask_nib=self._MaskNib 
-        t1w_nib = self._T1WNib
+    def _UpdateVTKDomain(self,bFullyPopulate):
 
-        # Focal-point voxel (label == 5 in the mask)
-        mask_array = self.FinalMaskRaw
-        focal_voxel = np.array(np.where(mask_array == 5)).flatten()
-        self._LocFocalPoint = focal_voxel
-    
-        self._vtk_visualization.viewer.load_base(mask_nib,
-                                            focal_voxel,
-                                            'Tissue Type',
-                                            tissue_label=True)
-        self._vtk_visualization.viewer.add_overlay(t1w_nib,'T1W',use_percentile=True,id='T1W')
-        self._vtk_visualization.viewer._on_cmap_changed(0,"TissueLabel")
-        self._vtk_visualization.viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
-        if self._NiftiCT:
-            self._vtk_visualization.viewer.add_overlay(self._NiftiCT,'CT',id='CT')
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        if self._NiftiAirMask:
-            self._vtk_visualization.viewer.add_overlay(self._NiftiAirMask,'Air',id='Air')
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-            self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(4)
+        if bFullyPopulate:
+            lTraj=np.arange(len(self.Config['ID']))
+        else:
+            lTraj=[self._TrajectoryNumber]
+        for n in lTraj:
+            mask_nib=self._MaskNib[n]
+            t1w_nib = self._T1WNib[n]
 
-        if hasattr(self,'_NiftiSkull'):
-            self._UpdateVTKAcResults()
-        if hasattr(self,'_NiftiTemperature'):
-            self._UpdateVTKThermal()
+            # Focal-point voxel (label == 5 in the mask)
+            mask_array = mask_nib.get_fdata(dtype=np.float32)
+            focal_voxel = np.array(np.where(mask_array == 5)).flatten()
+          
+            viewer =self._vtk_visualization.viewer[n]
+        
+            viewer.load_base(mask_nib,
+                                                focal_voxel,
+                                                'Tissue Type',
+                                                tissue_label=True)
+            viewer.add_overlay(t1w_nib,'T1W',use_percentile=True,id='T1W')
+            viewer._on_cmap_changed(0,"TissueLabel")
+            viewer._layer_panel._rows[1]._opacity_slider.setValue(50)
+            if self._NiftiCT[n]:
+                viewer.add_overlay(self._NiftiCT[n],'CT',id='CT')
+                viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
+                viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
+                viewer._layer_panel._rows[-1]._on_cutoff_changed()
+            if self._NiftiAirMask[n]:
+                viewer.add_overlay(self._NiftiAirMask[n],'Air',id='Air')
+                viewer._layer_panel._rows[-1]._opacity_slider.setValue(50)
+                viewer._layer_panel._rows[-1]._cutoff_edit.setText('1')
+                viewer._layer_panel._rows[-1]._on_cutoff_changed()
+                viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(4)
 
-    def UpdateNiftiAcResults(self,NiftiSkull,NiftiWater):
-        self._NiftiSkull=NiftiSkull
-        self._NiftiWater=NiftiWater
-        self._UpdateVTKAcResults()
+            if hasattr(self,'_NiftiSkull'):
+                self._UpdateVTKAcResults(n)
+            if hasattr(self,'_NiftiTemperature'):
+                self._UpdateVTKThermal()
+        if hasattr(self,'_NiftiMergeAc'):
+            self._UpdateVTKMergedAcResults()   
+
+    def UpdateNiftiAcResults(self,NiftiSkull,NiftiWater,NTraj):
+        self._NiftiSkull[NTraj]=NiftiSkull
+        self._NiftiWater[NTraj]=NiftiWater
+        self._UpdateVTKAcResults(NTraj)
 
     def UpdateNiftiTemperatureResults(self,NiftiIntensity,NiftiTemperature):
         self._NiftiIntensity=NiftiIntensity
         self._NiftiTemperature=NiftiTemperature
         self._UpdateVTKThermal()
     
-    def _UpdateVTKAcResults(self):
+    def _UpdateVTKAcResults(self,NTraj):
         if not hasattr(self,'_vtk_visualization'):
             return
+        if self._NiftiSkull[NTraj] is None:
+            return
         # We remove previous entries if already available
+        viewer =self._vtk_visualization.viewer[NTraj]
         for id in ['Skull','Water']:
-            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
+            for n,row in enumerate(viewer._layer_panel._rows):
                 if row._id == id:
-                    self._vtk_visualization.viewer._on_remove_requested(n)
+                    viewer._on_remove_requested(n)
                     break
-        self._vtk_visualization.viewer.add_overlay(self._NiftiSkull,'Skull',id='Skull')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        self._vtk_visualization.viewer.add_overlay(self._NiftiWater,'Water',id='Water')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.setChecked(False)
+        viewer.add_overlay(self._NiftiSkull[NTraj],'Skull',id='Skull')
+        viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
+        viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
+        viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        viewer.add_overlay(self._NiftiWater[NTraj],'Water',id='Water')
+        viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+        viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
+        viewer._layer_panel._rows[-1]._on_cutoff_changed()
+        viewer._layer_panel._rows[-1]._eye_btn.setChecked(False)
         #we select skull for default windowing
-        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
+        viewer._layer_panel._rows[-2]._wl_btn.click()
 
     def _UpdateVTKThermal(self):
         if not hasattr(self,'_vtk_visualization'):
@@ -1343,31 +1488,67 @@ class BabelBrain(QWidget):
 
         self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
 
+    def UpdateNiftiMergedAcResults(self,NiftiMergeAc):
+        self._NiftiMergeAc=NiftiMergeAc
+        self._UpdateVTKMergedAcResults()
+
+    def _UpdateVTKMergedAcResults(self):
+        if not hasattr(self,'_vtk_visualization'):
+            return
+        # We remove previous entries if already available
+        for viewer in self._vtk_visualization.viewer:
+            for id in ['MergedAc']:
+                for n,row in enumerate(viewer._layer_panel._rows):
+                    if row._id == id:
+                        viewer._on_remove_requested(n)
+                        break
+            viewer.add_overlay(self._NiftiMergeAc,'MergedAc',id='MergedAc')
+            viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
+            viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
+            viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
+            viewer._layer_panel._rows[-1]._on_cutoff_changed()
+
     @Slot()
     def _closingVtkVisualization(self):
         delattr(self,'_vtk_visualization')
 
-    @Slot()
-    def HideMarks(self,v):
+    def _applyMarkerVisibility(self,panel):
         mc=[0.75, 0.75, 0.0,1.0]
         if self.Widget.HideMarkscheckBox.isChecked():
             mc[3] = 0.0
-        for m in self._markers:
+        for m in panel['markers']:
             m.set_markerfacecolor(mc)
             m.set_markeredgecolor(mc)
-        self._figMasks.canvas.draw_idle()
-    
+
     @Slot()
-    def UpdateTransparency(self):
+    def HideMarks(self,v):
+        # Apply to every trajectory tab so the toggle stays consistent.
+        for panel in getattr(self,'_trajPanels',[]):
+            if panel.get('figure') is None:
+                continue
+            self._applyMarkerVisibility(panel)
+            panel['figure'].canvas.draw_idle()
+
+    def _applyTransparency(self,panel):
         alpha=self.Widget.TransparencyScrollBar.value()/100.0
         sm=plt.cm.ScalarMappable(cmap='gray')
-        T1WXZ=sm.to_rgba(self._T1WData[:,self._LocFocalPoint[1],:].T,alpha=alpha)
-        T1WYZ=sm.to_rgba(self._T1WData[self._LocFocalPoint[0],:,:].T,alpha=alpha)
-        T1WXY=sm.to_rgba(self._T1WData[:,:,self._LocFocalPoint[2]].T,alpha=alpha)
-        for im,T1WMap in zip(self._imT1W,
+        T1WData=panel['T1WData']
+        loc=panel['LocFocalPoint']
+        T1WXZ=sm.to_rgba(T1WData[:,loc[1],:].T,alpha=alpha)
+        T1WYZ=sm.to_rgba(T1WData[loc[0],:,:].T,alpha=alpha)
+        T1WXY=sm.to_rgba(T1WData[:,:,loc[2]].T,alpha=alpha)
+        for im,T1WMap in zip(panel['imT1W'],
                                     [T1WXZ,T1WYZ,T1WXY]):
             im.set_data(T1WMap)
-        self._figMasks.canvas.draw_idle()
+
+    @Slot()
+    def UpdateTransparency(self):
+        # Apply to every trajectory tab so the slider affects all plots.
+        for panel in getattr(self,'_trajPanels',[]):
+            if panel.get('figure') is None:
+                continue
+            self._applyTransparency(panel)
+            panel['figure'].canvas.draw_idle()
             
           
     def GetExport(self):
@@ -1443,6 +1624,9 @@ class BabelBrain(QWidget):
                        data=self._TelmetryMsgs,
                        waittocomplete=waittocomplete)
         self._TelmetryMsgs=[] #we clean the list
+
+    def AllAcFieldsDone(self):
+        return all(x is not None for x in self._NiftiSkull)
         
 
 def get_color_at(widget, x,y):
@@ -1496,7 +1680,8 @@ class RunMaskGeneration(QObject):
         self.logTelemetry.emit(f"CTS:L3:S1: Frequency={Frequency} PPW={BasePPW}")
         print("Frequency, SmallestSoS, BasePPW,SpatialStep",Frequency, SmallestSoS, BasePPW,SpatialStep)
 
-        prefix=self._mainApp._prefix
+        prefix=self._mainApp._prefix[self._mainApp._TrajectoryNumber]
+        TrajectoryNumber=self._mainApp._TrajectoryNumber
         print("Config['Mat4Trajectory']",self._mainApp.Config['Mat4Trajectory'])
 
         #first we ensure we have isotropic scans at 1 mm required to get affine matrix at 1.0 mm isotropic
@@ -1513,6 +1698,7 @@ class RunMaskGeneration(QObject):
         kargs['SpatialStep']=SpatialStep
         kargs['Location']=[0,0,0] #This coordinate will be ignored
         kargs['prefix']=prefix
+        kargs['TrajectoryNumber']=TrajectoryNumber
         kargs['bPlot']=False
         if self._mainApp.Config['bUseCT']:
             kargs['CT_or_ZTE_input']=self._mainApp.Config['CT_or_ZTE_input']
@@ -1535,7 +1721,8 @@ class RunMaskGeneration(QObject):
                                                     'TxOptimizedWeights',
                                                     'PlanTUSRoot',
                                                     'ConnectomeRoot',
-                                                    'TelemetryLevel']:
+                                                    'TelemetryLevel',
+                                                    'NumberTransducers']:
                 return True
             else:
                 return False

@@ -393,6 +393,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                                 bMaximizeBoneRim=False,
                                 bSaveCTMaximized=False,
                                 bExtractAirRegions=True,
+                                TrajectoryNumber=0,
                                 RegionAirCT=[-1200,-400]): #created reduced FOV
     '''
     Generate masks for acoustic/viscoelastic simulations. 
@@ -464,7 +465,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
             #while charm is much more powerful to segment skull regions, we need to calculate the meshes ourselves
             charminput = inputfilenames['SimbNIBSinput']
             charm = S1_file_manager.load_file(charminput)
-            charmdata=np.ascontiguousarray(charm.get_fdata())[:,:,:,0]
+            charmdata=np.ascontiguousarray(charm.get_fdata(dtype=np.float32))[:,:,:,0]
             AllTissueRegion=charmdata>0 #this mimics what the old headreco does for skin
             
             tissues = S1_file_manager.load_file(charminput)
@@ -513,6 +514,8 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
     if TrajectoryType =='brainsight':
         print('*'*40+'\n Reading orientation and target location directly from Brainsight export\n'+'*'*40)
         RMat=ReadTrajectoryBrainsight(Mat4Trajectory)
+        if len(RMat.shape)==3: #multi trajectory
+            RMat=RMat[:,:,TrajectoryNumber]
     else:
         inMat=read_itk_affine_transform(Mat4Trajectory)
          #we add this as in Brainsight the needle for trajectory starts at with a vector pointing 
@@ -790,7 +793,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                     rCT = S1_file_manager.load_file(outputfilenames['T1WinCT'])
                     S1_file_manager.save_file(file_data=fct,filename=outputfilenames['ReuseMask'],precursor_files=outputfilenames['T1WinCT'])
 
-            rCTdata=rCT.get_fdata()
+            rCTdata=rCT.get_fdata(dtype=np.float32)
         else:
             if CTType in [2,3]:
                 print('Processing ZTE/PETRA to pCT')
@@ -824,7 +827,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                                                    ResampleFilter,
                                                    ResampleFilterCOMPUTING_BACKEND)
                 gc.collect()
-            rCTdata=rCT.get_fdata()
+            rCTdata=rCT.get_fdata(dtype=np.float32)
             hist = np.histogram(rCTdata[rCTdata>TypeThresold],bins=15)
             print('*'*40)
             if CTType in [1,2,3]:
@@ -862,7 +865,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
 
             RatioCTVoxels=np.ceil(2.0/np.array(nCT.header.get_zooms())).astype(int) # 1 mm distance
 
-            ndataCT=np.ascontiguousarray(nCT.get_fdata()).astype(np.float32)
+            ndataCT=np.ascontiguousarray(nCT.get_fdata(dtype=np.float32))
             if CTType in [1,2,3]:
                 ndataCT[ndataCT>HUCapThreshold]=HUCapThreshold
             print('ndataCT range',ndataCT.min(),ndataCT.max())
@@ -1163,9 +1166,9 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
     
     with CodeTimer("CTS:L3:S1: resampling T1 to mask",unit='s'):
         if ResampleFilter is None:
-            T1Conformal=processing.resample_from_to(T1Conformal,mask_nifti2,mode='constant',order=0,cval=T1Conformal.get_fdata().min())
+            T1Conformal=processing.resample_from_to(T1Conformal,mask_nifti2,mode='constant',order=0,cval=T1Conformal.get_fdata(dtype=np.float32).min())
         else:
-            T1Conformal=ResampleFilter(T1Conformal,mask_nifti2,mode='constant',order=0,cval=T1Conformal.get_fdata().min(),GPUBackend=ResampleFilterCOMPUTING_BACKEND)
+            T1Conformal=ResampleFilter(T1Conformal,mask_nifti2,mode='constant',order=0,cval=T1Conformal.get_fdata(dtype=np.float32).min(),GPUBackend=ResampleFilterCOMPUTING_BACKEND)
         T1W_resampled_fname=os.path.dirname(T1Conformal_nii)+os.sep+prefix+'T1W_Resampled.nii.gz'
         S1_file_manager.save_file(file_data=T1Conformal,filename=T1W_resampled_fname)
     
