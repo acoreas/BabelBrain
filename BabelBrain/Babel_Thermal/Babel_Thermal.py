@@ -8,7 +8,8 @@ from collections import UserDict
 from PySide6.QtWidgets import (QApplication, QWidget,QGridLayout,
                 QHBoxLayout,QVBoxLayout,QLineEdit,QDialog,QTextEdit,
                 QGridLayout, QSpacerItem, QInputDialog, QFileDialog,QFrame,
-                QErrorMessage, QMessageBox,QDialogButtonBox,QLabel,QTableWidgetItem)
+                QErrorMessage, QMessageBox,QDialogButtonBox,QLabel,QTableWidgetItem,
+                QTabWidget)
 from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread,Qt
 from PySide6 import QtCore,QtWidgets
 from PySide6.QtUiTools import QUiLoader
@@ -39,6 +40,11 @@ import platform
 import nibabel
 
 _IS_MAC = platform.system() == 'Darwin'
+
+# Sentinel marking a per-trajectory attribute that is absent on the controller
+# (so _LoadThermalPanelState removes it rather than setting a stale value; this
+# preserves the hasattr(...) guards used throughout _showMatplotlibVisualization).
+_MISSING = object()
 
 def resource_path():  # needed for bundling
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -88,72 +94,161 @@ class ThermalProfileConfig(UserDict):
                     timing_config[key] = default_value
 
 class Babel_Thermal(QWidget):
+    # Step-3 layout mirrors Step 2 (_BabelBaseTx): one tab per trajectory, each
+    # an independent ThermalForm with its own controls, plot and results table.
+    # self.Widget always points at the active tab's form and self._TrajectoryNumber
+    # at its index; both are re-synced on tab change.  Per-trajectory computation
+    # state (thermal H5 results, matplotlib figure/artists, mesh grids, \u2026) lives
+    # in self._thPanels[i]; it is stashed/restored into the self._* aliases that
+    # _showMatplotlibVisualization reads, so switching tabs keeps each trajectory's
+    # results and plot intact (exactly like the Step-2 _acPanels mechanism).
+    #
+    # A Step-3 tab starts disabled and is enabled by EnableTrajectoryTab once the
+    # matching Step-2 acoustic simulation finishes (see _BabelBaseTx.UpdateAcResults).
+    #
+    # Controller attributes that carry per-trajectory state between calls; these
+    # are swapped in/out of self on every tab change (see _Save/_LoadThermalPanelState).
+    _PANEL_ATTRS = ('_ThermalResults', '_NiftiThermalNames', '_xf', '_yf', '_zf',
+                    '_XX', '_ZZ', '_LastTMap', '_bRecalculated', '_prevDisplay',
+                    '_prevView', '_layout', '_figIntThermalFields', 'static_canvas',
+                    '_static_ax1', '_static_ax2', '_IntensityIm', '_ThermalIm',
+                    '_contour1', '_contour2', '_airmask1', '_airmask2',
+                    '_ListMarkers', '_TempPlot')
+
     def __init__(self,parent=None,MainApp=None):
         super(Babel_Thermal, self).__init__(parent)
         self._MainApp=MainApp
-        self._ThermalResults=[]
         self._bMultiPoint = False
         self.bDisableUpdate=False
         self.static_canvas=None
         self.load_ui()
         self.DefaultConfig()
-        self._LastTMap=-1
 
     def load_ui(self):
-        from Babel_Thermal.ThermalForm import ThermalForm
-        self.Widget = ThermalForm(self)
+        self._setupTrajectoryTabs()
+
+    def _NewThermalPanel(self):
+        '''Fresh per-trajectory state (empty results, no computed figure yet).'''
+        return {'_ThermalResults': [], '_LastTMap': -1, 'static_canvas': None}
+
+    def _setupTrajectoryTabs(self):
+        IDs = list(self._MainApp.Config['ID'])
+        self._txTabs = QTabWidget(self)
+        self._txTabs.tabBar().setElideMode(Qt.ElideNone)
+        self._txTabs.tabBar().setExpanding(False)
+        self._txTabs.setUsesScrollButtons(True)
+        # Single trajectory (the common case): hide the tab bar / pane frame so
+        # Step 3 looks like the original single-panel view.  Several trajectories:
+        # keep the bar and only a top line under the tab row.
+        if len(IDs) == 1:
+            self._txTabs.tabBar().setVisible(False)
+            self._txTabs.setStyleSheet("QTabWidget::pane { border: 0px; }")
+        else:
+            self._txTabs.setStyleSheet(
+                "QTabWidget::pane { border: 0px; border-top: 1px solid palette(mid); }")
 
         _l = QVBoxLayout(self)
         _l.setContentsMargins(0, 0, 0, 0)
-        _l.addWidget(self.Widget)
+        _l.addWidget(self._txTabs)
 
-        self.Widget.SelectProfile.clicked.connect(self.SelectProfile)
-        self.Widget.SelectProfile.setStyleSheet("color: #2db52d")   # bright green, readable on light & dark
-        self.Widget.CalculateThermal.clicked.connect(self.RunSimulation)
-        self.Widget.CalculateThermal.setStyleSheet("color: #e03030")  # bright red, readable on light & dark
-        self.Widget.ExportSummary.clicked.connect(self.ExportSummary)
-        self.Widget.ExportMaps.clicked.connect(self.ExportMaps)
+        self._Widgets = []
+        self._thPanels = []
+        for i, tid in enumerate(IDs):
+            form = self._CreateForm()
+            self._txTabs.addTab(form, str(tid))
+            self._Widgets.append(form)
+            self._thPanels.append(self._NewThermalPanel())
+            # Point at this form while wiring so the connections bind to *its*
+            # widgets (button -> self.RunSimulation, etc.).
+            self.Widget = form
+            self._TrajectoryNumber = i
+            self._WirePanel()
+            # Each Step-3 tab stays HIDDEN until its Step-2 sim completes, so a
+            # trajectory's thermal tab only appears once its acoustic field exists
+            # (revealed by EnableTrajectoryTab / RefreshTrajectoryTabs).  We hide
+            # (setTabVisible) rather than disable (setTabEnabled): the main-window
+            # QSS collapses *disabled* tabs to zero size and QTabBar does not
+            # relayout on re-enable, which left a just-enabled tab zero-width and
+            # gave the tab bar a stale height.
+            self._txTabs.setTabVisible(i, False)
 
-        self.Widget.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateSelCombination)
-        self.Widget.IsppaSpinBox.valueChanged.connect(self._showMatplotlibVisualization)
-        self.Widget.IsppaWaterSpinBox.valueChanged.connect(self.UpdateIsppaWater)
-        self.Widget.IsppaScrollBar.valueChanged.connect(self._showMatplotlibVisualization)
-        self.Widget.HideMarkscheckBox.stateChanged.connect(self.HideMarkChange)
-        self.Widget.IsppaScrollBar.setEnabled(False)
-        self.Widget.SelCombinationDropDown.setEnabled(False)
-        self.Widget.IsppaSpinBox.setEnabled(False)
-        self.Widget.IsppaWaterSpinBox.setEnabled(False)
+        # Activate the first tab; only now listen for user tab switches so the
+        # addTab loop above doesn't fire the handler prematurely.
+        self.Widget = self._Widgets[0]
+        self._TrajectoryNumber = 0
+        self._LoadThermalPanelState(0)
+        self._txTabs.setCurrentIndex(0)
+        self._txTabs.currentChanged.connect(self._OnTrajectoryTabChanged)
 
-        self.Widget.LocMTB.clicked.connect(self.LocateMTB)
-        self.Widget.LocMTB.setEnabled(False)
-        self.Widget.LocMTC.clicked.connect(self.LocateMTC)
-        self.Widget.LocMTC.setEnabled(False)
-        self.Widget.LocMTS.clicked.connect(self.LocateMTS)
-        self.Widget.LocMTS.setEnabled(False)
-        
-        self.Widget.DisplayDropDown.currentIndexChanged.connect(self.UpdateDisplay)
-        self.Widget.DisplayDropDown.setEnabled(False)
+    def _CreateForm(self,bMergedResults=False):
+        from Babel_Thermal.ThermalForm import ThermalForm
+        return ThermalForm(self,bMergedResults=bMergedResults)
 
-        # for l in [self.Widget.label_13,self.Widget.label_14,self.Widget.label_15,self.Widget.label_22]:
-        #     l.setText(l.text()+' ('+"\u2103"+'):')
+    def _WirePanel(self,bMergedResults=False):
+        w = self.Widget
+        if not bMergedResults:
+            w.SelectProfile.clicked.connect(self.SelectProfile)
+            w.SelectProfile.setStyleSheet("color: #2db52d")   # bright green, readable on light & dark
+            w.CalculateThermal.clicked.connect(self.RunSimulation)
+            w.CalculateThermal.setStyleSheet("color: #e03030")  # bright red, readable on light & dark
+        w.ExportSummary.clicked.connect(self.ExportSummary)
+        w.ExportMaps.clicked.connect(self.ExportMaps)
+        if hasattr(w,'CombineTrajectories'):
+            w.CombineTrajectories.clicked.connect(self.CombineTrajectories)
 
-        Ids=['Isppa at target (W/cm2):',
-             'Req. Isppa water (W/cm2):',
-             'Ispta (W/cm2):',
-             'Ispta at target (W/cm2):',
+        w.SelCombinationDropDown.currentIndexChanged.connect(self.UpdateSelCombination)
+        w.IsppaSpinBox.valueChanged.connect(self._showMatplotlibVisualization)
+        w.IsppaWaterSpinBox.valueChanged.connect(self.UpdateIsppaWater)
+        w.IsppaScrollBar.valueChanged.connect(self._showMatplotlibVisualization)
+        w.HideMarkscheckBox.stateChanged.connect(self.HideMarkChange)
+        w.IsppaScrollBar.setEnabled(False)
+        w.SelCombinationDropDown.setEnabled(False)
+        w.IsppaSpinBox.setEnabled(False)
+        w.IsppaWaterSpinBox.setEnabled(False)
+
+        w.LocMTB.clicked.connect(self.LocateMTB)
+        w.LocMTB.setEnabled(False)
+        w.LocMTC.clicked.connect(self.LocateMTC)
+        w.LocMTC.setEnabled(False)
+        w.LocMTS.clicked.connect(self.LocateMTS)
+        w.LocMTS.setEnabled(False)
+        w.LocTargets.clicked.connect(self.LocateTargets)
+        w.LocTargets.setEnabled(False)
+
+        if bMergedResults:
+            w.SelTarget.setEnabled(False)
+
+        w.DisplayDropDown.currentIndexChanged.connect(self.UpdateDisplay)
+        w.DisplayDropDown.setEnabled(False)
+
+        w.SelViewDropDown.currentIndexChanged.connect(self.UpdateView)
+        w.SelViewDropDown.setEnabled(False)
+
+        self._SetupResultsTable(w,bMergedResults)
+
+    def _SetupResultsTable(self, w,bMergedResults):
+        Ids=['Isppa at target (W/cm2):']
+        if bMergedResults:
+            Ids+=['Max. Isppa (W/cm2):',
+                 'Max. Ispta (W/cm2):']
+        else:
+            Ids+=['Req. Isppa water (W/cm2):',
+                  'Ispta (W/cm2):']
+        Ids+=['Ispta at target (W/cm2):',
              'Adjustment in RAS T1W space:',
              'Max. temp. target ('+"\u2103"+') - CEM43:',
              'Max. temp. brain ('+"\u2103"+') - CEM43:',
              'Max. temp. skin ('+"\u2103"+') - CEM43:',
              'Max. temp. skull ('+"\u2103"+') - CEM43:',
-             'Mechanical index:',
-             'Distance from MTB to MTT (mm):']
-        bg_color = self.Widget.tableWidget.parent().palette().color(self.Widget.backgroundRole())
-        text_color = self.Widget.tableWidget.parent().palette().color(self.Widget.foregroundRole())
-        table_palette = self.Widget.tableWidget.palette()
+             'Mechanical index:']
+        if not bMergedResults:
+             Ids+=['Distance from MTB to MTT (mm):']
+        bg_color = w.tableWidget.parent().palette().color(w.backgroundRole())
+        text_color = w.tableWidget.parent().palette().color(w.foregroundRole())
+        table_palette = w.tableWidget.palette()
         table_palette.setColor(QPalette.Base, bg_color)
         table_palette.setColor(QPalette.Text, text_color)
-        self.Widget.tableWidget.setPalette(table_palette)
+        w.tableWidget.setPalette(table_palette)
         # NOTE: a former Windows-only setSizePolicy(Fixed, Fixed) was removed
         # here. The programmatic ThermalForm adds the table with stretch=1 and an
         # Expanding policy so it fills the left column; pinning it Fixed capped
@@ -171,18 +266,189 @@ class Babel_Thermal(QWidget):
                 font.setPointSize(12)
                 item.setFont(font)
 
-            self.Widget.tableWidget.setItem(n,0,item)
+            w.tableWidget.setItem(n,0,item)
         if 'Windows' in platform.system():
-            self.Widget.tableWidget.setColumnWidth(0,180)
-            self.Widget.tableWidget.setColumnWidth(1,self.Widget.tableWidget.width()-180)
+            w.tableWidget.setColumnWidth(0,180)
+            w.tableWidget.setColumnWidth(1,w.tableWidget.width()-180)
         else:
-            self.Widget.tableWidget.setColumnWidth(0,220)
-            self.Widget.tableWidget.setColumnWidth(1,self.Widget.tableWidget.width()-220)
+            w.tableWidget.setColumnWidth(0,220)
+            w.tableWidget.setColumnWidth(1,w.tableWidget.width()-220)
         if 'Windows' in platform.system():
-            self.Widget.tableWidget.verticalHeader().setDefaultSectionSize(5)
+            w.tableWidget.verticalHeader().setDefaultSectionSize(5)
         else:
-            self.Widget.tableWidget.verticalHeader().setDefaultSectionSize(25)
-        self.Widget.tableWidget.setFrameShape(QFrame.NoFrame)
+            w.tableWidget.verticalHeader().setDefaultSectionSize(25)
+        w.tableWidget.setFrameShape(QFrame.NoFrame)
+
+    
+    def _SaveThermalPanelState(self, idx):
+        '''Copy the active self._* per-trajectory state into panel *idx*.'''
+        if not hasattr(self, '_thPanels') or not (0 <= idx < len(self._thPanels)):
+            return
+        panel = self._thPanels[idx]
+        for a in self._PANEL_ATTRS:
+            panel[a] = getattr(self, a, _MISSING)
+
+    def _LoadThermalPanelState(self, idx):
+        '''Restore panel *idx*'s per-trajectory state into the self._* aliases.'''
+        panel = self._thPanels[idx]
+        for a in self._PANEL_ATTRS:
+            val = panel.get(a, _MISSING)
+            if val is _MISSING:
+                if hasattr(self, a):
+                    delattr(self, a)
+            else:
+                setattr(self, a, val)
+
+    @Slot(int)
+    def _OnTrajectoryTabChanged(self, idx):
+        if not hasattr(self, '_Widgets') or idx < 0 or idx >= len(self._Widgets):
+            return
+        self._SaveThermalPanelState(self._TrajectoryNumber)
+        self._TrajectoryNumber = idx
+        self.Widget = self._Widgets[idx]
+        self._LoadThermalPanelState(idx)
+        # Redraw the newly shown tab from its own state. Swapping the panel
+        # aliases alone leaves whatever was last drawn (e.g. the Merged tab's
+        # plot) on screen — mirroring Step 2's _ActivatePanel, which re-renders
+        # on tab change. Force the rebuild path so the tab's own plot host is
+        # repopulated; only for tabs that already carry computed results, so an
+        # as-yet-uncomputed tab stays blank until CalculateThermal runs.
+        if getattr(self, '_figIntThermalFields', None) is not None \
+                and len(getattr(self, '_ThermalResults', [])) > 0 \
+                and not self.bDisableUpdate:
+            self._bRecalculated = True
+            self._showMatplotlibVisualization()
+
+    # Read Step-2 acoustic results by trajectory index 
+    # Step 3 must NEVER change Step 2's active trajectory: doing so clobbered
+    # which trajectory the next Step-2 run computed and which Step-3 tab got
+    # enabled (a Step-3 visit in between broke the next Step-2 run).  Each Step-3
+    # tab instead reads the acoustic result for *its own* trajectory straight from
+    # AcSim's per-trajectory panels/forms, keyed by self._TrajectoryNumber, and
+    # leaves AcSim's active tab untouched.
+
+    def _AcSimPanel(self, t=None):
+        if t is None:
+            t = self._TrajectoryNumber
+        return self._MainApp.AcSim._acPanels[t]
+
+    def _AcSimFullSolName(self, t=None):
+        '''The acoustic DataForSim result for trajectory *t* (list for phased arrays).'''
+        return self._AcSimPanel(t)['FullSolName']
+    
+    def _AcSimFullMergedSolName(self):
+        return self._MainApp.AcSim._MergedResultsFullSolName
+
+    def _IsMergedTab(self, idx=None):
+        '''True when *idx* (default: the active tab) is the combined "Merged" tab.'''
+        if idx is None:
+            idx = self._TrajectoryNumber
+        return getattr(self, '_mergedTabIndex', None) == idx
+
+    def _AcSimMergedSkullMap(self):
+        '''
+        The combined skull/material map for the mask overlay on the Merged tab,
+        read from Step 2's merged acoustic panel (built when Step 2 combined the
+        trajectories, which is a precondition for combining thermal results).
+        '''
+        AcSim = self._MainApp.AcSim
+        idx = getattr(AcSim, '_mergedTabIndex', None)
+        if idx is not None and 0 <= idx < len(AcSim._acPanels):
+            panel = AcSim._acPanels[idx]
+            if panel is not None and 'Skull' in panel:
+                return panel['Skull']['MaterialMap']
+        return None
+
+    def _AcSimSkull(self, t=None):
+        '''The Step-2 skull/material data for trajectory *t* (mask overlay).'''
+        return self._AcSimPanel(t)['Skull']
+
+    def _AcSimForm(self, t=None):
+        '''The Step-2 device form for trajectory *t* (e.g. RefocusingcheckBox).'''
+        if t is None:
+            t = self._TrajectoryNumber
+        return self._MainApp.AcSim._Widgets[t]
+
+    def _CaptureFromAcSim(self, fn, t=None):
+        '''
+        Call an AcSim device method (GetExport / GetExtraDataForThermal) as if
+        trajectory *t* were active, then restore AcSim exactly as it was.  The
+        swap is synchronous (no tab move, no event-loop turn), so AcSim's active
+        trajectory is unchanged on return and Step 2 is never disturbed.  Only the
+        per-trajectory aliases those methods read are swapped (form, SDR, cone
+        distance); the values come from trajectory *t*'s stored acoustic panel.
+        '''
+        if t is None:
+            t = self._TrajectoryNumber
+        AcSim = self._MainApp.AcSim
+        panel = self._AcSimPanel(t)
+        aliases = {'_SDR': 'SDR', '_LastDistanceConeToFocus': 'LastDistanceConeToFocus'}
+        _NA = object()
+        saved = {a: getattr(AcSim, a, _NA)
+                 for a in ('_TrajectoryNumber', 'Widget', *aliases)}
+        try:
+            AcSim._TrajectoryNumber = t
+            AcSim.Widget = AcSim._Widgets[t]
+            for attr, key in aliases.items():
+                if panel is not None and key in panel:
+                    setattr(AcSim, attr, panel[key])
+            return fn()
+        finally:
+            for a, v in saved.items():
+                if v is _NA:
+                    if hasattr(AcSim, a):
+                        delattr(AcSim, a)
+                else:
+                    setattr(AcSim, a, v)
+
+    def _AcFieldDone(self, i):
+        '''True once trajectory *i*'s Step-2 acoustic field has been computed.'''
+        AcSim = self._MainApp.AcSim
+        if not hasattr(AcSim, '_acPanels') or not (0 <= i < len(AcSim._acPanels)):
+            return False
+        panel = AcSim._acPanels[i]
+        return panel is not None and panel.get('figure') is not None
+
+    def RefreshTrajectoryTabs(self):
+        '''
+        Reveal every Step-3 tab whose Step-2 acoustic field exists.  Driven from
+        ground truth (AcSim's per-trajectory result panels) rather than from a
+        single completion notification, so the set of visible thermal tabs is
+        always correct no matter the order Step-2 trajectories were run in or when
+        the user switches to the thermal step.
+        '''
+        if not hasattr(self, '_txTabs'):
+            return
+        for i in range(self._txTabs.count()):
+            # The Merged tab is not a trajectory: its visibility is driven by
+            # combining thermal results (_AddMergedResultsTab), not by an acoustic
+            # field, so leave it out of the per-trajectory reveal.
+            if self._IsMergedTab(i):
+                continue
+            if self._AcFieldDone(i) and not self._txTabs.isTabVisible(i):
+                self._txTabs.setTabVisible(i, True)
+
+    def showEvent(self, event):
+        # Whenever Step 3 becomes visible, make sure every trajectory whose
+        # acoustic field is ready has its tab shown (self-corrects regardless
+        # of what happened while the user was on other steps).
+        super().showEvent(event)
+        self.RefreshTrajectoryTabs()
+
+    def EnableTrajectoryTab(self, idx):
+        '''
+        Reveal the Step-3 tab for trajectory *idx*.  Called from Step 2 once the
+        matching acoustic simulation completes, so each trajectory's thermal tab
+        only appears after its acoustic field exists.  Step 3 always lands on the
+        first tab, so the user starts there when opening the step.
+        '''
+        if not hasattr(self, '_txTabs') or not (0 <= idx < self._txTabs.count()):
+            return
+        self._txTabs.setTabVisible(idx, True)
+        # Also pick up any other trajectories already computed (belt-and-braces
+        # with showEvent), then land on the first tab.
+        self.RefreshTrajectoryTabs()
+        self._txTabs.setCurrentIndex(0)
 
     def DefaultConfig(self):
         #Specific parameters for the thermal simulation - to be configured  via a yaml
@@ -191,12 +457,17 @@ class Babel_Thermal(QWidget):
         print(config)
         self.Config=config
         self.bDisableUpdate=True
+        for form in self._Widgets:
+            self._PopulateCombination(form)
+        self.bDisableUpdate=False
 
-        while self.Widget.SelCombinationDropDown.count()>0:
-            self.Widget.SelCombinationDropDown.removeItem(0)
+    def _PopulateCombination(self, form):
+        dd = form.SelCombinationDropDown
+        while dd.count()>0:
+            dd.removeItem(0)
 
         if self.Config['bConcatenateSimulations']:
-            self.Widget.SelCombinationDropDown.addItem('CONCATENATED PROTOCOL')
+            dd.addItem('CONCATENATED PROTOCOL')
         else:
             for c in self.Config['AllDC_PRF_Duration']:
                 if c['Duration']<1.0:
@@ -210,8 +481,7 @@ class Babel_Thermal(QWidget):
                 stritem = sOn + ' ' + sOff + ' %3.1f%% %3.1fHz' %(c['DC']*100,c['PRF'])
                 if c['Repetitions'] >1:
                     stritem += ' %iReps' %(c['Repetitions'])
-                self.Widget.SelCombinationDropDown.addItem(stritem)
-        self.bDisableUpdate=False
+                dd.addItem(stritem)
 
     def EnableMultiPoint(self):
         self._bMultiPoint=True
@@ -225,13 +495,30 @@ class Babel_Thermal(QWidget):
                 self.Widget.SelectProfile.setProperty('UserData',fThermalProfile)  
                 self.DefaultConfig()  
                 self.RunSimulation()
-                
+
 
     @Slot()
-    def RunSimulation(self):
+    def CombineTrajectories(self):
+        print('this',self._TrajectoryNumber)
+        MergedPressureRatio=[]
+        self._SaveThermalPanelState(self._TrajectoryNumber)
+        for n in range(len(self._MainApp.Config['ID'])):
+            SelIsppa=self._Widgets[n].IsppaSpinBox.value()
+            MergedPressureRatio.append(self._thPanels[n]['_ThermalResults'][0]['PressureRatio']*np.sqrt(SelIsppa/self.Config['BaseIsppa']))
+        self.RunSimulation(True,MergedPressureRatio)
+            
+    @Slot()
+    def RunSimulation(self,bMergedSimulation=False,MergedPressureRatio=[]):
         bCalcFields=False
-        
-        BaseField=self._MainApp.AcSim._FullSolName
+
+        # Acoustic result for THIS thermal tab's trajectory (read by index; the
+        # thermal worker uses the same index, so Step 2 is never re-pointed).
+        if not bMergedSimulation:
+            BaseField=self._AcSimFullSolName()
+        else:
+            BaseField=self._AcSimFullMergedSolName()
+
+        self._bRunningMerged=bMergedSimulation
         
         if type(BaseField) is list:
             BaseField=BaseField[0]
@@ -260,8 +547,23 @@ class Babel_Thermal(QWidget):
         self._bRecalculated=True
         self._ThermalResults=[]
         if bCalcFields:
+            # Capture everything the worker needs from Step 2 for THIS trajectory
+            # up front (case file, refocus selection, device extra-data), so the
+            # off-thread worker never reads AcSim's live/active state.
+            t = self._TrajectoryNumber
+
+            if not bMergedSimulation:
+                case = self._AcSimFullSolName(t)
+            else:
+                case=self._AcSimFullMergedSolName()
+
+
+            bRefocus = (hasattr(self._AcSimForm(t), 'RefocusingcheckBox') and
+                        self._AcSimForm(t).RefocusingcheckBox.isChecked())
+            ExtraData = self._CaptureFromAcSim(
+                self._MainApp.AcSim.GetExtraDataForThermal, t)
             self.thread = QThread()
-            self.worker = RunThermalSim(self._MainApp)
+            self.worker = RunThermalSim(self._MainApp, case, bRefocus, ExtraData,bMergedSimulation,MergedPressureRatio)
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.UpdateThermalResults)
@@ -282,6 +584,14 @@ class Babel_Thermal(QWidget):
             self._MainApp.showClockDialog()
         else:
             self.UpdateThermalResults()
+            if bMergedSimulation:
+                #we adjust Isppa values to match results loaded in merged results
+                MergedPressureRatio=self._thPanels[-1]['_ThermalResults'][0]['MergedPressureRatio']
+                for n in range(len(self._MainApp.Config['ID'])):
+                    self._txTabs.setCurrentIndex(n)
+                    SelIsppa=(MergedPressureRatio[n]/self._thPanels[n]['_ThermalResults'][0]['PressureRatio'])**2 * self.Config['BaseIsppa']
+                    self._Widgets[n].IsppaSpinBox.setValue(SelIsppa)
+                self._txTabs.setCurrentIndex(len(self._MainApp.Config['ID']))
 
     def NotifyError(self):
         self._MainApp.hideClockDialog()
@@ -308,6 +618,41 @@ class Babel_Thermal(QWidget):
         self._showMatplotlibVisualization()
 
     @Slot()
+    def UpdateView(self,val):
+        self._showMatplotlibVisualization()
+
+    def _GetViewParams(self):
+        '''
+        Map the "Select view" choice to the fixed (scroll) axis, the two displayed
+        axes and their coordinate vectors.  XZ (default) fixes Y and shows X-Z; YZ
+        fixes X and shows Y-Z; XY fixes Z and shows X-Y.  hvec/vvec are the
+        horizontal/vertical plot coordinates (x/y raw, z relative to the skin).
+        '''
+        view = self.Widget.SelViewDropDown.currentText()
+        if view == 'YZ':
+            return dict(view=view, axis=0, haxis=1, vaxis=2,
+                        hvec=self._yf, vvec=self._zf,
+                        hlabel='Y (mm)', vlabel='Distance from skin (mm)',
+                        poslabel='X pos')
+        if view == 'XY':
+            return dict(view=view, axis=2, haxis=0, vaxis=1,
+                        hvec=self._xf, vvec=self._yf,
+                        hlabel='X (mm)', vlabel='Y (mm)',
+                        poslabel='Z pos')
+        return dict(view='XZ', axis=1, haxis=0, vaxis=2,
+                    hvec=self._xf, vvec=self._zf,
+                    hlabel='X (mm)', vlabel='Distance from skin (mm)',
+                    poslabel='Y pos')
+
+    def _SlicePlane(self, Field, Sel, axis):
+        '''Take the 2D slice at index *Sel* along the fixed *axis* (shape [h,v]).'''
+        if axis == 0:
+            return Field[Sel, :, :]
+        if axis == 2:
+            return Field[:, :, Sel]
+        return Field[:, Sel, :]
+
+    @Slot()
     def UpdateIsppaWater(self,val):
         self._showMatplotlibVisualization(bIsppaBrainToWater=False)
 
@@ -322,25 +667,32 @@ class Babel_Thermal(QWidget):
         self.Widget.IsppaWaterSpinBox.setEnabled(True)
         self.Widget.DisplayDropDown.setEnabled(True)
         WhatDisplay = self.Widget.DisplayDropDown.currentIndex()
-        if WhatDisplay==0:
-            self.Widget.LocMTS.setEnabled(True)
-            self.Widget.LocMTC.setEnabled(True)
-            self.Widget.LocMTB.setEnabled(True)
-            self.Widget.IsppaScrollBar.setEnabled(True)
+        bShowPlanes =WhatDisplay==0
+        self.Widget.LocMTS.setEnabled(bShowPlanes)
+        self.Widget.LocMTC.setEnabled(bShowPlanes)
+        self.Widget.LocMTB.setEnabled(bShowPlanes)
+        self.Widget.IsppaScrollBar.setEnabled(bShowPlanes)
+        self.Widget.SelViewDropDown.setEnabled(bShowPlanes)
+        if bShowPlanes:
             if self.Widget.HideMarkscheckBox.isEnabled()== False:
-                self.Widget.HideMarkscheckBox.setEnabled(True)
+                self.Widget.HideMarkscheckBox.setEnabled(bShowPlanes)
         else:
-            self.Widget.LocMTS.setEnabled(False)
-            self.Widget.LocMTC.setEnabled(False)
-            self.Widget.LocMTB.setEnabled(False)
-            self.Widget.IsppaScrollBar.setEnabled(False)
             if self.Widget.HideMarkscheckBox.isEnabled()== True:
-                self.Widget.HideMarkscheckBox.setEnabled(False)
-            
-        BaseField=self._MainApp.AcSim._FullSolName
+                self.Widget.HideMarkscheckBox.setEnabled(bShowPlanes)
+        self.Widget.LocTargets.setEnabled(bShowPlanes)
+        if self._txTabs.currentIndex()>=len(self._MainApp.Config['ID']):
+            self.Widget.SelTarget.setEnabled(bShowPlanes)
+        
+        if not self._IsMergedTab():
+            BaseField=self._AcSimFullSolName()
+        else:
+            BaseField=self._AcSimFullMergedSolName()
+
         if type(BaseField) is list:
             BaseField=BaseField[0]
-            
+
+        bShowingMerged= self._txTabs.currentIndex()>= len(self._MainApp.Config['ID'])
+
         if len(self._ThermalResults)==0:
             self._MainApp.hideClockDialog()
             self._NiftiThermalNames=[]
@@ -359,6 +711,7 @@ class Babel_Thermal(QWidget):
             else:
                 DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
             self._xf=DataThermal['x_vec']
+            self._yf=DataThermal['y_vec']
             self._zf=DataThermal['z_vec']
             SkinZ=np.array(np.where(DataThermal['MaterialMap']==1)).T.min(axis=0)[1]
             self._zf-=self._zf[SkinZ]
@@ -372,12 +725,26 @@ class Babel_Thermal(QWidget):
             BaselineTemperature=37.0
         
         Loc=DataThermal['TargetLocation']
+        if bShowingMerged:
+            TransformedLocations=DataThermal['TransformedLocations']
 
-        if self._LastTMap==-1:
-            self.Widget.IsppaScrollBar.setMaximum(DataThermal['MaterialMap'].shape[1]-1)
-            self.Widget.IsppaScrollBar.setValue(Loc[1])
+        # Selected orthogonal view: which axis the slice scrollbar scrolls, and the
+        # two displayed axes + coordinate vectors.
+        vp = self._GetViewParams()
+        axis = vp['axis']
+        if not hasattr(self, '_prevView'):
+            self._prevView = vp['view']
+        bViewChanged = (self._prevView != vp['view'])
+
+        # (Re)scale the slice scrollbar to the fixed axis on first display or when
+        # the view changes; centre it on the target's index along that axis.
+        if self._LastTMap==-1 or bViewChanged:
+            self.bDisableUpdate=True
+            self.Widget.IsppaScrollBar.setMaximum(DataThermal['MaterialMap'].shape[axis]-1)
+            self.Widget.IsppaScrollBar.setValue(int(Loc[axis]))
+            self.bDisableUpdate=False
             self.Widget.IsppaScrollBar.setEnabled(True)
-            
+
         if self.Config['bConcatenateSimulations']:
             self._LastTMap=len(self._ThermalResults)-1
         else:
@@ -457,19 +824,45 @@ class Babel_Thermal(QWidget):
 
         SelBrain=np.isin(DataThermal['MaterialMap'],BrainID)
 
-        AcSimMask=self._MainApp.AcSim._Skull['MaterialMap']
+        if self._IsMergedTab():
+            AcSimMask=self._AcSimMergedSkullMap()
+        else:
+            AcSimMask=self._AcSimSkull()['MaterialMap']
 
-        IsppaTarget = DataThermal['p_map'][Loc[0],Loc[1],Loc[2]]**2/2/ImpedanceTarget/1e4*IsppaRatio
-        
+        IsppaTarget = DataThermal['p_map'][tuple(Loc)]**2/2/ImpedanceTarget/1e4*IsppaRatio
+
         LocMax=np.array(np.where(DataThermal['p_map']==DataThermal['p_map'][SelBrain].max())).flatten()
         ImpedanceLocMax= DensityMap[LocMax[0],LocMax[1],LocMax[2]]*SoSMap[LocMax[0],LocMax[1],LocMax[2]]
-        
-        self.Widget.tableWidget.setItem(0,1,NewItem('%4.2f' % IsppaTarget,IsppaTarget))
+        pMax=DataThermal['p_map'][tuple(LocMax)]
+        IsppaMax=pMax**2/2/(DensityMap[tuple(LocMax)]*SoSMap[tuple(LocMax)])/1e4
+        if not bShowingMerged:
+            IsppaMax*=IsppaRatio
 
-        if self._bMultiPoint:
-            self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f (%4.2f)' % (AdjustedIsspa,AdjustedIsspaStDev),AdjustedIsspa))
+        if bShowingMerged:
+            IsppaTargets=[]
+            IsptaTargets=[]
+            for t in DataThermal['TransformedLocations']:
+                IsppaTargets.append(DataThermal['p_map'][tuple(t)]**2/2/(DensityMap[tuple(t)]*SoSMap[tuple(t)])/1e4)
+                if self.Config['bConcatenateSimulations']:
+                    dcIpsta=[]
+                    for d in DutyCycle:
+                        dcIpsta.append(IsppaTargets[-1]*d)
+                    IsptaTargets.append(dcIpsta)
+                else:
+                    IsptaTargets.append(IsppaTargets[-1]*DutyCycle)
+            IsppaTargets=np.array(IsppaTargets).flatten()
+            IsptaTargets=np.array(IsptaTargets)
+            s=', '.join(format(x, "2.1f") for x in IsppaTargets)
+            self.Widget.tableWidget.setItem(0,1,NewItem(s,IsppaTargets))
         else:
-            self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % AdjustedIsspa,AdjustedIsspa))
+            self.Widget.tableWidget.setItem(0,1,NewItem('%4.2f' % IsppaTarget,IsppaTarget))
+        if bShowingMerged:
+            self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % IsppaMax,IsppaMax))
+        else:
+            if self._bMultiPoint:
+                self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f (%4.2f)' % (AdjustedIsspa,AdjustedIsspaStDev),AdjustedIsspa))
+            else:
+                self.Widget.tableWidget.setItem(1,1,NewItem('%4.2f' % AdjustedIsspa,AdjustedIsspa))
         self.bDisableUpdate=True
         if bIsppaBrainToWater:
             self.Widget.IsppaWaterSpinBox.setValue(np.round(AdjustedIsspa,2))
@@ -477,57 +870,109 @@ class Babel_Thermal(QWidget):
             self.Widget.IsppaSpinBox.setValue(np.round(SelIsppa,2))
         self.bDisableUpdate=False
 
-        if self.Config['bConcatenateSimulations']:
-            st=','.join(format(x*SelIsppa, "2.1f") for x in DutyCycle)
-            self.Widget.tableWidget.setItem(2,1,NewItem(st,[x * SelIsppa for x in DutyCycle]))
-            st=','.join(format(x*IsppaTarget, "2.1f") for x in DutyCycle)
-            self.Widget.tableWidget.setItem(3,1,NewItem(st,[x * IsppaTarget for x in DutyCycle]))
-        else:
-            self.Widget.tableWidget.setItem(2,1,NewItem('%4.2f' % (SelIsppa*DutyCycle),SelIsppa*DutyCycle))
-            self.Widget.tableWidget.setItem(3,1,NewItem('%4.2f' % (IsppaTarget*DutyCycle),IsppaTarget*DutyCycle))
+        if bShowingMerged:
+            if self.Config['bConcatenateSimulations']:
+                s=', '.join(format(x*IsppaMax, "2.1f") for x in DutyCycle)
+            else:
+                self.Widget.tableWidget.setItem(2,1,NewItem('%4.2f' % (IsppaMax*DutyCycle),IsppaMax*DutyCycle))
+            s=''
+            if self.Config['bConcatenateSimulations']:
+                for ipDC in IsptaTargets:
+                    if len(s)>0:
+                        s+='\n'
+                    s+=', '.join(format(x, "2.1f") for x in ipDC)
+                self.Widget.tableWidget.setItem(3,1,NewItem(s,IsptaTargets))
+                self.Widget.tableWidget.resizeRowToContents(3)
+            else:
+                s=', '.join(format(x, "2.1f") for x in IsptaTargets)
+                self.Widget.tableWidget.setItem(3,1,NewItem(s,IsptaTargets))
+        else:    
+            if self.Config['bConcatenateSimulations']:
+                st=', '.join(format(x*SelIsppa, "2.1f") for x in DutyCycle)
+                self.Widget.tableWidget.setItem(2,1,NewItem(st,[x * SelIsppa for x in DutyCycle]))
+                st=', '.join(format(x*IsppaTarget, "2.1f") for x in DutyCycle)
+                self.Widget.tableWidget.setItem(3,1,NewItem(st,[x * IsppaTarget for x in DutyCycle]))
+            else:
+                self.Widget.tableWidget.setItem(2,1,NewItem('%4.2f' % (SelIsppa*DutyCycle),SelIsppa*DutyCycle))
+                self.Widget.tableWidget.setItem(3,1,NewItem('%4.2f' % (IsppaTarget*DutyCycle),IsppaTarget*DutyCycle))
 
-        self.Widget.tableWidget.setItem(4,1,NewItem(np.array2string(DataThermal['AdjustmentInRAS'],
-                                               formatter={'float_kind':lambda x: "%3.2f" % x}),DataThermal['AdjustmentInRAS']))
+        if not bShowingMerged:
+            self.Widget.tableWidget.setItem(4,1,NewItem(np.array2string(DataThermal['AdjustmentInRAS'],
+                                                formatter={'float_kind':lambda x: "%3.2f" % x}),DataThermal['AdjustmentInRAS']))
+        else:
+            AdjustmentInRAS=[]
+            s=''
+            for n in range(len(self._MainApp.Config['ID'])):
+                AdjustmentInRAS.append(self._thPanels[n]['_ThermalResults'][0]['AdjustmentInRAS'])
+                if len(s)>=0:
+                    s+='\n'
+                s+=np.array2string(AdjustmentInRAS[-1],formatter={'float_kind':lambda x: "%3.2f" % x})
+            AdjustmentInRAS=np.array(AdjustmentInRAS)
+            self.Widget.tableWidget.setItem(4,1,NewItem(s,AdjustmentInRAS))
+            self.Widget.tableWidget.resizeRowToContents(4)
 
         AdjustedTemp=((DataThermal['TemperaturePoints']-BaselineTemperature)*IsppaRatio+BaselineTemperature)
-        DoseUpdate=np.trapz(RCoeff(AdjustedTemp)**(43.0-AdjustedTemp),dx=DataThermal['dt'],axis=1)/60
+        DoseUpdate=np.trapezoid(RCoeff(AdjustedTemp)**(43.0-AdjustedTemp),dx=DataThermal['dt'],axis=1)/60
    
-        MTT=(DataThermal['TempEndFUS'][Loc[0],Loc[1],Loc[2]]-BaselineTemperature)*IsppaRatio+BaselineTemperature
+        MTT=(DataThermal['TempEndFUS'][tuple(Loc)]-BaselineTemperature)*IsppaRatio+BaselineTemperature
         if self._MainApp.Config['bForceHomogenousMedium']:
             MTTCEM=DoseUpdate[0]
         else:
-            MTTCEM=DoseUpdate[3] if len(DoseUpdate)==4 else DoseUpdate[1]
-        self.Widget.tableWidget.setItem(5,1,NewItem('%3.1f - %4.1G' % (MTT,MTTCEM),[MTT,MTTCEM],"red" if MTT >= 39 else "blue"))
+            if not bShowingMerged:
+                MTTCEM=DoseUpdate[3] if len(DoseUpdate)==4 else DoseUpdate[1]
+            else:
+                MTTs=[]
+                MTTCEMs=[]
+                k=0
+                for n in range(len(DoseUpdate)-len(self._MainApp.Config['ID']),len(DoseUpdate)):
+                    MTTs.append((DataThermal['TempEndFUS'][tuple(DataThermal['TransformedLocations'][k])]-BaselineTemperature)*IsppaRatio+BaselineTemperature)
+                    MTTCEMs.append(DoseUpdate[n])
+                    k+=1
+                MTTs=np.array(MTTs)
+                MTTCEMs=np.array(MTTCEMs)
+        if bShowingMerged:
+            s=''
+            for t,c in zip(MTTs,MTTCEMs):
+                if len(s)>=0:
+                    s+='\n'
+                s+='%3.1f - %4.1G' % (t,c)
+            self.Widget.tableWidget.setItem(5,1,NewItem(s,[MTTs,MTTCEMs],"red" if (np.any(np.array(MTTs)) >= 39 or np.any(np.array(MTTCEMs)) >=2.0) else "blue"))
+            self.Widget.tableWidget.resizeRowToContents(5)
+        else:
+            self.Widget.tableWidget.setItem(5,1,NewItem('%3.1f - %4.1G' % (MTT,MTTCEM),[MTT,MTTCEM],"red" if (MTT >= 39 or MTTCEM >=2.0) else "blue"))
 
         MTB=DataThermal['TI']*IsppaRatio+BaselineTemperature
         if self._MainApp.Config['bForceHomogenousMedium']:
             MTBCEM=DoseUpdate[0]
         else:
             MTBCEM=DoseUpdate[1]
-        self.Widget.tableWidget.setItem(6,1,NewItem('%3.1f - %4.1G' % (MTB,MTBCEM),[MTB,MTBCEM],"red" if MTB >= 39 else "blue"))
+        self.Widget.tableWidget.setItem(6,1,NewItem('%3.1f - %4.1G' % (MTB,MTBCEM),[MTB,MTBCEM],"red" if (MTB >= 39 or MTBCEM >=2.0) else "blue"))
         
         MTS=DataThermal['TIS']*IsppaRatio+BaselineTemperature
         MTSCEM=DoseUpdate[0]
-        self.Widget.tableWidget.setItem(7,1,NewItem('%3.1f - %4.1G' % (MTS,MTSCEM),[MTS,MTSCEM],"red" if MTS >= 39 else "blue"))
+        self.Widget.tableWidget.setItem(7,1,NewItem('%3.1f - %4.1G' % (MTS,MTSCEM),[MTS,MTSCEM],"red" if MTS >= 39  else "blue"))
 
         MTC=DataThermal['TIC']*IsppaRatio+BaselineTemperature
         if self._MainApp.Config['bForceHomogenousMedium']:
             MTCCEM=DoseUpdate[0]
         else:
             MTCCEM=DoseUpdate[2]
-        self.Widget.tableWidget.setItem(8,1,NewItem('%3.1f - %4.1G' % (MTC,MTCCEM),[MTC,MTCCEM],"red" if MTC >= 39 else "blue"))
+        self.Widget.tableWidget.setItem(8,1,NewItem('%3.1f - %4.1G' % (MTC,MTCCEM),[MTC,MTCCEM],"red" if MTC >= 39  else "blue"))
 
-        MI=np.sqrt(SelIsppa*1e4*ImpedanceLocMax*2)/1e6/np.sqrt(self._MainApp._Frequency/1e6)
+        if bShowingMerged:
+            MI=pMax/1e6/np.sqrt(self._MainApp._Frequency/1e6)
+        else:
+            MI=np.sqrt(SelIsppa*1e4*ImpedanceLocMax*2)/1e6/np.sqrt(self._MainApp._Frequency/1e6)
+        
         self.Widget.tableWidget.setItem(9,1,NewItem('%3.1f ' % (MI),MI,"red" if MI > 1.9 else "blue"))
 
-        Distance_MTB_MTT = np.linalg.norm(DataThermal['mBrain']-Loc)*(xf[1]-xf[0])
-        self.Widget.tableWidget.setItem(10,1,NewItem('%3.1f ' % (Distance_MTB_MTT),Distance_MTB_MTT))
+        if not bShowingMerged:
+            Distance_MTB_MTT = np.linalg.norm(DataThermal['mBrain']-Loc)*(xf[1]-xf[0])
+            self.Widget.tableWidget.setItem(10,1,NewItem('%3.1f ' % (Distance_MTB_MTT),Distance_MTB_MTT))
 
-        if self._bRecalculated:
-            XX,ZZ=np.meshgrid(xf,zf)
-            self._XX=XX
-            self._ZZ=ZZ
-            
+        if self._bRecalculated or bViewChanged:
+            self._XX,self._ZZ=np.meshgrid(vp['hvec'],vp['vvec'])
+
         if bUpdatePlot:
             Intensity=DataThermal['p_map']**2/2/DensityMap/SoSMap/1e4*IsppaRatio
             Temperature=(DataThermal['TempEndFUS']-BaselineTemperature)*IsppaRatio+BaselineTemperature
@@ -539,13 +984,13 @@ class Babel_Thermal(QWidget):
            
             if not hasattr(self,'_prevDisplay'):
                 self._prevDisplay = -1 #we set the initial plotting
-            IntensityMap=Intensity[:,SelY,:].T.copy()
-            Tmap=Temperature[:,SelY,:]
+            IntensityMap=self._SlicePlane(Intensity,SelY,axis).T.copy()
+            Tmap=self._SlicePlane(Temperature,SelY,axis)
 
 
             crlims=[0,1,2]
 
-            if (self._bRecalculated or self._prevDisplay != WhatDisplay or self.Config['bConcatenateSimulations']) and hasattr(self,'_figIntThermalFields'):
+            if (self._bRecalculated or self._prevDisplay != WhatDisplay or bViewChanged or self.Config['bConcatenateSimulations']) and hasattr(self,'_figIntThermalFields'):
                 children = []
                 for i in range(self._layout.count()):
                     child = self._layout.itemAt(i).widget()
@@ -580,11 +1025,11 @@ class Babel_Thermal(QWidget):
                                 del self._airmask1
                                 del self._airmask2
                             
-                            self._contour1=self._static_ax1.contour(self._XX,self._ZZ,AcSimMask[:,SelY,:].T,crlims, colors ='y',linestyles = ':')
-                            self._contour2=self._static_ax2.contour(self._XX,self._ZZ,AcSimMask[:,SelY,:].T,crlims, colors ='y',linestyles = ':')
+                            self._contour1=self._static_ax1.contour(self._XX,self._ZZ,self._SlicePlane(AcSimMask,SelY,axis).T,crlims, colors ='y',linestyles = ':')
+                            self._contour2=self._static_ax2.contour(self._XX,self._ZZ,self._SlicePlane(AcSimMask,SelY,axis).T,crlims, colors ='y',linestyles = ':')
 
                             if 'AirMask' in DataThermal:
-                                AirMap=DataThermal['AirMask'][:,SelY,:].T
+                                AirMap=self._SlicePlane(DataThermal['AirMask'],SelY,axis).T
                                 AirMap=np.ma.masked_where(AirMap==0 , AirMap)
                                 self._airmask1 = self._static_ax1.contourf(self._XX,self._ZZ,AirMap,[0,1],cmap=plt.cm.gray_r)
                                 self._airmask2 = self._static_ax2.contourf(self._XX,self._ZZ,AirMap,[0,1],cmap=plt.cm.gray_r)
@@ -624,25 +1069,29 @@ class Babel_Thermal(QWidget):
                     self._static_ax1=static_ax1
                     self._static_ax2=static_ax2
 
-                    self._IntensityIm=static_ax1.imshow(IntensityMap,extent=[xf.min(),xf.max(),zf.max(),zf.min()],
+                    _extent=[vp['hvec'].min(),vp['hvec'].max(),vp['vvec'].max(),vp['vvec'].min()]
+                    self._IntensityIm=static_ax1.imshow(IntensityMap,extent=_extent,
                             cmap=plt.cm.jet)
                     static_ax1.set_title('Isppa (W/cm$^2$)')
                     plt.colorbar(self._IntensityIm,ax=static_ax1)
                     if not self._MainApp.Config['bForceHomogenousMedium']:
-                        self._contour1=static_ax1.contour(self._XX,self._ZZ,AcSimMask[:,SelY,:].T,crlims,colors ='y',linestyles = ':')
+                        self._contour1=static_ax1.contour(self._XX,self._ZZ,self._SlicePlane(AcSimMask,SelY,axis).T,crlims,colors ='y',linestyles = ':')
 
-                    static_ax1.set_ylabel('Distance from skin (mm)')
+                    static_ax1.set_xlabel(vp['hlabel'])
+                    static_ax1.set_ylabel(vp['vlabel'])
 
                     self._ThermalIm=static_ax2.imshow(Tmap.T,
-                            extent=[xf.min(),xf.max(),zf.max(),zf.min()],cmap=plt.cm.jet,vmin=BaselineTemperature)
+                            extent=_extent,cmap=plt.cm.jet,vmin=BaselineTemperature)
                     static_ax2.set_title('Temperature ($^{\circ}$C)')
+                    static_ax2.set_xlabel(vp['hlabel'])
+                    static_ax2.set_ylabel(vp['vlabel'])
 
                     plt.colorbar(self._ThermalIm,ax=static_ax2)
                     if not self._MainApp.Config['bForceHomogenousMedium']:
-                        self._contour2=static_ax2.contour(self._XX,self._ZZ,AcSimMask[:,SelY,:].T,crlims, colors ='y',linestyles = ':')
+                        self._contour2=static_ax2.contour(self._XX,self._ZZ,self._SlicePlane(AcSimMask,SelY,axis).T,crlims, colors ='y',linestyles = ':')
 
                     if 'AirMask' in DataThermal:
-                        AirMap=DataThermal['AirMask'][:,SelY,:].T
+                        AirMap=self._SlicePlane(DataThermal['AirMask'],SelY,axis).T
                         AirMap=np.ma.masked_where(AirMap==0 , AirMap)
                         self._airmask1 = static_ax1.contourf(self._XX,self._ZZ,AirMap,[0,1],cmap=plt.cm.gray_r)
                         self._airmask2 = static_ax2.contourf(self._XX,self._ZZ,AirMap,[0,1],cmap=plt.cm.gray_r)
@@ -656,10 +1105,21 @@ class Babel_Thermal(QWidget):
                     self._layout.addWidget(self.static_canvas)
                     static_ax1 = self.static_canvas.figure.subplots(1,1)
                     timevec=np.arange(AdjustedTemp.shape[1])*DataThermal['dt']
-                    self._TempPlot=static_ax1.plot(timevec,AdjustedTemp.T)
+                    if bShowingMerged:
+                        l=AdjustedTemp.shape[0]-len(self._MainApp.Config['ID'])
+                        self._TempPlot=static_ax1.plot(timevec,AdjustedTemp[:(l-1),:].T)
+                        self._TempPlot+=static_ax1.plot(timevec,AdjustedTemp[l:,:].T)
+                        
+                    else:
+                        self._TempPlot=static_ax1.plot(timevec,AdjustedTemp.T)
                     static_ax1.set_xlabel('time (s)')
                     static_ax1.set_ylabel('temperature (degrees C)')
-                    leg=static_ax1.legend(['Skin','Brain','Skull','Target'], bbox_to_anchor=(1.01, 1), loc=2, borderaxespad=0.)
+                    leg=['Skin','Brain','Skull']
+                    if bShowingMerged:
+                        leg+=self._MainApp.Config['ID']
+                    else:
+                        leg.append('Target')
+                    leg=static_ax1.legend(leg, bbox_to_anchor=(1.01, 1), loc=2, borderaxespad=0.)
                     self._static_ax1=static_ax1
                     self._figIntThermalFields.set_facecolor(self._MainApp._BackgroundColorFigures)
                     self._static_ax1.set_facecolor(self._MainApp._BackgroundColorFigures)
@@ -668,41 +1128,127 @@ class Babel_Thermal(QWidget):
 
             self._bRecalculated=False
             if WhatDisplay==0:
-                yf=DataThermal['y_vec']
-                yf-=yf[Loc[1]]
+                hvec, vvec = vp['hvec'], vp['vvec']
+                haxis, vaxis = vp['haxis'], vp['vaxis']
+                # Fixed-axis position readout, relative to the target.
+                posvec=DataThermal[['x_vec','y_vec','z_vec'][axis]].copy()
+                posvec=posvec-posvec[int(Loc[axis])]
                 if not self.Widget.HideMarkscheckBox.isChecked():
-                    self._ListMarkers.append(self._static_ax1.plot(xf[Loc[0]],zf[Loc[2]],'k+',markersize=18)[0])
-                    self._ListMarkers.append(self._static_ax2.plot(xf[Loc[0]],zf[Loc[2]],'k+',markersize=18,)[0])
-                    for k,kl in zip(['mSkin','mBrain','mSkull'],['MTS','MTB','MTC']):
-                        if SelY == DataThermal[k][1]:
-                            self._ListMarkers.append(self._static_ax2.plot(xf[DataThermal[k][0]],
-                                            zf[DataThermal[k][2]],'wx',markersize=12)[0])
-                            self._ListMarkers.append(self._static_ax2.text(xf[DataThermal[k][0]]-5,
-                                            zf[DataThermal[k][2]]+5,kl,color='w',fontsize=10))
-                            
-                self.Widget.SliceLabel.setText("Y pos = %3.2f mm" %(yf[self.Widget.IsppaScrollBar.value()]))
-            self._prevDisplay=WhatDisplay
+                    if not bShowingMerged:
+                        if SelY == Loc[axis]:
+                            self._ListMarkers.append(self._static_ax1.plot(hvec[Loc[haxis]],vvec[Loc[vaxis]],'k+',markersize=18)[0])
+                            self._ListMarkers.append(self._static_ax2.plot(hvec[Loc[haxis]],vvec[Loc[vaxis]],'k+',markersize=18,)[0])
+                    else:
+                        for tl in TransformedLocations:
+                            if SelY == tl[axis]:
+                                self._ListMarkers.append(self._static_ax1.plot(hvec[tl[haxis]],vvec[tl[vaxis]],'k+',markersize=18)[0])
+                                self._ListMarkers.append(self._static_ax2.plot(hvec[tl[haxis]],vvec[tl[vaxis]],'k+',markersize=18,)[0])
 
-            NiftiIntensity=nibabel.Nifti1Image(np.flip(Intensity,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull.affine)
-            NiftiTemperature=nibabel.Nifti1Image(np.flip(Temperature,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull.affine)
-            self._MainApp.UpdateNiftiTemperatureResults(NiftiIntensity,NiftiTemperature)
+                    for k,kl in zip(['mSkin','mBrain','mSkull'],['MTS','MTB','MTC']):
+                        if SelY == DataThermal[k][axis]:
+                            self._ListMarkers.append(self._static_ax2.plot(hvec[DataThermal[k][haxis]],
+                                            vvec[DataThermal[k][vaxis]],'wx',markersize=12)[0])
+                            self._ListMarkers.append(self._static_ax2.text(hvec[DataThermal[k][haxis]]-5,
+                                            vvec[DataThermal[k][vaxis]]+5,kl,color='w',fontsize=10))
+
+                self.Widget.SliceLabel.setText("%s = %3.2f mm" %(vp['poslabel'],posvec[self.Widget.IsppaScrollBar.value()]))
+            self._prevDisplay=WhatDisplay
+            self._prevView=vp['view']
+
+            # Per-trajectory NIfTI/VTK overlays are keyed by trajectory index; the
+            # Merged tab has no such slot (there is no merged thermal viewer), so
+            # skip the 3D update for it — the 2D matplotlib view above is enough.
+            if not self._IsMergedTab():
+                NiftiIntensity=nibabel.Nifti1Image(np.flip(Intensity,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
+                NiftiTemperature=nibabel.Nifti1Image(np.flip(Temperature,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
+                self._MainApp.UpdateNiftiTemperatureResults(NiftiIntensity,NiftiTemperature,self._TrajectoryNumber)
+            else:
+                NiftiIntensity=nibabel.Nifti1Image(np.transpose(np.flip(Intensity,axis=2).astype(np.float32),(1,2,0)),
+                                                   affine=self._MainApp._NiftiMergeAc.affine)
+                NiftiTemperature=nibabel.Nifti1Image(np.transpose(np.flip(Temperature,axis=2).astype(np.float32),(1,2,0)),
+                                                   affine=self._MainApp._NiftiMergeAc.affine)
+                self._MainApp.UpdateNiftiMergedThermalResults(NiftiIntensity,NiftiTemperature)
 
     @Slot()
     def UpdateThermalResults(self):
-        self._showMatplotlibVisualization()
+        # A merged run renders into the dedicated "Merged" tab; a normal run
+        # renders into the active trajectory tab.
+        if getattr(self, '_bRunningMerged', False):
+            self._bRunningMerged = False
+            self._AddMergedResultsTab()
+        else:
+            self._showMatplotlibVisualization()
+        self.UpdateCombineResultsButton()
 
+    def _AddMergedResultsTab(self):
+        '''
+        Show the combined thermal results in a dedicated "Merged" tab, mirroring
+        _BabelBaseTx._AddMergedResultsTab.  Unlike Step 2's read-only merged form,
+        Step 3 keeps the full ThermalForm (left panel + results table); only the
+        compute actions (Calculate / Update-profile / Combine) are disabled, since
+        this tab just displays the already-combined thermal maps.  Re-running the
+        combination re-renders the existing tab from the freshly written files.
+        '''
+        if getattr(self, '_mergedTabIndex', None) is None:
+            form = self._CreateForm(bMergedResults=True)
+            idx = self._txTabs.addTab(form, 'Merged')
+            self._Widgets.append(form)
+            self._thPanels.append(self._NewThermalPanel())
+            self._mergedTabIndex = idx
+            # Wire the merged form (bind signals/table to *its* widgets), then make
+            # it read-only for the compute actions.
+            prevW, prevT = self.Widget, self._TrajectoryNumber
+            self.Widget = form
+            self._TrajectoryNumber = idx
+            self._WirePanel(bMergedResults=True)
+            self._PopulateCombination(form)
+            self.Widget, self._TrajectoryNumber = prevW, prevT
+            if hasattr(form, 'CombineTrajectories'):
+                form.CombineTrajectories.setEnabled(False)
+            self._txTabs.setTabVisible(idx, True)
+        idx = self._mergedTabIndex
+
+        # Point the controller at the merged tab and (re)render the combined
+        # result.  We do NOT stash the current (post-run, emptied) self state into
+        # the trajectory panel — CombineTrajectories already saved that tab before
+        # launching the run — so the source trajectory tab keeps its own results.
+        self.Widget = self._Widgets[idx]
+        self._TrajectoryNumber = idx
+        self._LoadThermalPanelState(idx)
+        self._bRecalculated = True
+        self._ThermalResults = []
+        self._showMatplotlibVisualization()
+        self._txTabs.setCurrentIndex(idx)
+
+    def UpdateCombineResultsButton(self):
+        if hasattr(self.Widget,'CombineTrajectories'):
+            for n in range(len(self._MainApp.Config['ID'])):
+                self._Widgets[n].CombineTrajectories.setEnabled(self._MainApp.AllThermalFieldsDone() and len(self._MainApp.AcSim._Widgets)>len(self._MainApp.Config['ID']))
+
+    def _AxisSel(self):
+        view = self.Widget.SelViewDropDown.currentIndex()
+        return  {0:1,1:0,2:2}[view]
     @Slot()
     def LocateMTB(self):
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
-        self.Widget.IsppaScrollBar.setValue(DataThermal['mBrain'][1])
+        self.Widget.IsppaScrollBar.setValue(DataThermal['mBrain'][self._AxisSel()])
     @Slot()
     def LocateMTC(self):
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
-        self.Widget.IsppaScrollBar.setValue(DataThermal['mSkull'][1])
+        self.Widget.IsppaScrollBar.setValue(DataThermal['mSkull'][self._AxisSel()])
     @Slot()
     def LocateMTS(self):
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
-        self.Widget.IsppaScrollBar.setValue(DataThermal['mSkin'][1])
+        self.Widget.IsppaScrollBar.setValue(DataThermal['mSkin'][self._AxisSel()])
+    @Slot()
+    def LocateTargets(self):
+        DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
+        if self._TrajectoryNumber>=len(self._MainApp.Config['ID']):
+            selTarget=self.Widget.SelTarget.currentIndex()
+            loc=DataThermal['TransformedLocations'][selTarget]
+        else:
+            loc=DataThermal['TargetLocation']
+        self.Widget.IsppaScrollBar.setValue(loc[self._AxisSel()])
 
     @Slot()
     def ExportSummary(self):
@@ -717,10 +1263,14 @@ class Babel_Thermal(QWidget):
         
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
         DataToExport={}
-        #we recover specifics of main app and acoustic simulation
-        for obj in [self._MainApp,self._MainApp.AcSim]:
-            Export=obj.GetExport()
-            DataToExport= DataToExport | Export
+        #we recover specifics of main app and acoustic simulation (the acoustic
+        #export is read for THIS tab's trajectory without disturbing Step 2). The
+        #Merged tab has no per-trajectory acoustic form, so skip its acoustic export.
+        DataToExport = DataToExport | self._MainApp.GetExport()
+        if not self._IsMergedTab():
+            DataToExport = DataToExport | self._CaptureFromAcSim(self._MainApp.AcSim.GetExport)
+        else:
+            DataToExport = DataToExport | {'SDR':self._MainApp.AcSim._acPanels[self._TrajectoryNumber]['SDR']}
         DataToExport['AdjustRAS']=self.Widget.tableWidget.item(4,1).data(QtCore.Qt.UserRole)
         
         pd.DataFrame.from_dict(data=DataToExport, orient='index').to_csv(outCSV, header=False)
@@ -734,24 +1284,35 @@ class Babel_Thermal(QWidget):
                 f.write('TimingExposure,'+self.Widget.SelCombinationDropDown.currentText()+'\n')
                 f.write('*'*80+'\n')
 
-            DataToExport={}
-            DataToExport['Distance from MTB to MTT:']=self.Widget.tableWidget.item(10,1).data(QtCore.Qt.UserRole)
-            pd.DataFrame.from_dict(data=DataToExport, orient='index').to_csv(outCSV,mode='a', header=False)
+            if not self._IsMergedTab():
+                DataToExport={}
+                DataToExport['Distance from MTB to MTT:']=self.Widget.tableWidget.item(10,1).data(QtCore.Qt.UserRole)
+                pd.DataFrame.from_dict(data=DataToExport, orient='index').to_csv(outCSV,mode='a', header=False)
                 
             DataToExport={}
-            DataToExport['Isppa']=np.arange(0.5,self.Widget.IsppaSpinBox.maximum()+0.5,0.5)
+            if self._IsMergedTab():
+                DataToExport['Isppa']=['Merged']
+            else:
+                DataToExport['Isppa']=np.arange(0.5,self.Widget.IsppaSpinBox.maximum()+0.5,0.5)
             for v in DataToExport['Isppa']:
-                self._showMatplotlibVisualization(bUpdatePlot=False,OverWriteIsppa=v)
-                collection = ['Isppa target']
-                source = [0,1]
-                if self._bMultiPoint:
-                    collection+=['Isppa water (avg)','Isppa water (std)']
-                    source+=[1]
+                if not self._IsMergedTab():
+                    self._showMatplotlibVisualization(bUpdatePlot=False,OverWriteIsppa=v)
+                if self._IsMergedTab():
+                    collection = ['Isppa targets']
                 else:
-                    collection+=['Isppa water']
+                    collection = ['Isppa target']
+                source = [0,1]
+                if self._IsMergedTab():
+                    collection+=['Isppa Max']
+                else:
+                    if self._bMultiPoint:
+                        collection+=['Isppa water (avg)','Isppa water (std)']
+                        source+=[1]
+                    else:
+                        collection+=['Isppa water']
                 collection+=['Mechanical index',
                             'Ispta',
-                            'Ispta target',
+                            'Ispta targets' if self._IsMergedTab() else 'Ispta target',
                             'Max. temp. target',
                             'Max. temp. brain',
                             'Max. temp. skin',
@@ -797,10 +1358,15 @@ class Babel_Thermal(QWidget):
         suffix='_FullElasticSolution_Sub_NORM.nii.gz'
         if self._MainApp.Config['TxSystem'] not in ['CTX_500','CTX_250','DPX_500','Single','H246','BSonix','CTX_250_2ch',
                                                     'H246','R15287','R15473','DPXPC_300']:
-            if self._MainApp.AcSim.Widget.RefocusingcheckBox.isChecked():
+            if hasattr(self._AcSimForm(),'RefocusingcheckBox') and self._AcSimForm().RefocusingcheckBox.isChecked():
                 suffix='_FullElasticSolutionRefocus_Sub_NORM.nii.gz'
-        BasePath+=suffix
-        nidata = nibabel.load(BasePath)
+        if self._IsMergedTab():
+            # The combined maps live on the merged grid; take the affine from the
+            # merged acoustic NORM instead of a per-trajectory solution file.
+            nidata = nibabel.load(self._MainApp._merged_prefix_path + 'Merged_NORM.nii.gz')
+        else:
+            BasePath+=suffix
+            nidata = nibabel.load(BasePath)
         DataThermal=self._ThermalResults[self.Widget.SelCombinationDropDown.currentIndex()]
         if 'BaselineTemperature' in DataThermal:
             BaselineTemperature=DataThermal['BaselineTemperature']
@@ -820,6 +1386,10 @@ class Babel_Thermal(QWidget):
         pressureField=np.flip(pressureField,axis=2)
         intensityField=np.flip(intensityField,axis=2)
 
+        if self._IsMergedTab():
+            pressureField=np.transpose(pressureField,(1,2,0))
+            intensityField=np.transpose(intensityField,(1,2,0))
+
         OutName2=OutName.replace('ThermalField','PressureField')
         nii=nibabel.Nifti1Image(pressureField.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName2)
@@ -833,7 +1403,6 @@ class Babel_Thermal(QWidget):
         nii=nibabel.Nifti1Image(MIField.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName4)
             
-
         #If running with Brainsight, we save the path of thermal map
         if self._MainApp.Config['bInUseWithBrainsight']:
             with open(self._MainApp.Config['Brainsight-ThermalOutput'],'w') as f:
@@ -877,13 +1446,21 @@ class RunThermalSim(QObject):
     endError = Signal()
     logTelemetry = Signal(str)
 
-    def __init__(self,mainApp):
+    def __init__(self,mainApp,case,bRefocus,ExtraData,bMergedSimulation=False,MergedPressureRatio=[]):
          super(RunThermalSim, self).__init__()
          self._mainApp=mainApp
+         # Captured on the main thread for the active thermal trajectory, so the
+         # worker never reads AcSim's live/active state (which Step 3 must not
+         # disturb): the acoustic case file, refocus selection and device extras.
+         self._case=case
+         self._bRefocus=bRefocus
+         self._ExtraData=ExtraData
+         self._bMergedSimulation=bMergedSimulation
+         self._MergedPressureRatio=MergedPressureRatio
 
     def run(self):
 
-        case=self._mainApp.AcSim._FullSolName
+        case=self._case
         print('Calculating thermal maps for configurations\n',self._mainApp.ThermalSim.Config['AllDC_PRF_Duration'])
         T0=time.time()
         kargs={}
@@ -897,22 +1474,23 @@ class RunThermalSim(QObject):
         kargs['HomogenousMediumValues']=self._mainApp.Config['HomogenousMediumValues']
         kargs['bForceNoAbsorptionSkullScalp']=self._mainApp.Config['bForceNoAbsorptionSkullScalp']
         kargs['bConcatenateSimulations']=self._mainApp.ThermalSim.Config['bConcatenateSimulations']
+        kargs['bMergedSimulation']=self._bMergedSimulation
+        kargs['MergedPressureRatio']=self._MergedPressureRatio
 
         kargs['TxSystem']=self._mainApp.Config['TxSystem']
         if kargs['TxSystem'] in ['CTX_500','CTX_250','DPX_500','DPXPC_300','CTX_250_2ch',
                                  'Single','H246','BSonix','R15287','R15473']:
             kargs['sel_p']='p_amp'
         else:
-            bRefocus = self._mainApp.AcSim.Widget.RefocusingcheckBox.isChecked()
-            if bRefocus:
+            if self._bRefocus:
                 kargs['sel_p']='p_amp_refocus'
             else:
                 kargs['sel_p']='p_amp'
 
         # Start mask generation as separate process.
         queue=Queue()
-        ExtraData=self._mainApp.AcSim.GetExtraDataForThermal()
-        fieldWorkerProcess = Process(target=CalculateThermalProcess, 
+        ExtraData=self._ExtraData
+        fieldWorkerProcess = Process(target=CalculateThermalProcess,
                                     args=(queue,case,self._mainApp.ThermalSim.Config['AllDC_PRF_Duration'],ExtraData),
                                     kwargs=kargs)
         fieldWorkerProcess.start()      

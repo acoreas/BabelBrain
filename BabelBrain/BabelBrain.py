@@ -909,7 +909,7 @@ class BabelBrain(QWidget):
     
         #we prepare paths
         self._prefix=[ p + '_' + self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW) for p in self.Config['ID']]
-        self._merged_prefix = '+'.join(self.Config['ID']) + self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)
+        self._merged_prefix = '+'.join(self.Config['ID']) +'_'+ self.Config['TxSystem'] +'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)
         self._prefix_path=[self.Config['OutputFilesPath']+os.sep+p for p in self._prefix]
         self._merged_prefix_path = self.Config['OutputFilesPath']+os.sep+self._merged_prefix
         self._outnameMask=[p+'BabelViscoInput.nii.gz' for p in self._prefix_path]
@@ -924,6 +924,8 @@ class BabelBrain(QWidget):
         self._T1WDataRaw =[None]*len(self.Config['ID'])
         self._NiftiSkull =[None]*len(self.Config['ID'])
         self._NiftiWater =[None]*len(self.Config['ID'])
+        self._NiftiIntensity =[None]*len(self.Config['ID'])
+        self._NiftiTemperature =[None]*len(self.Config['ID'])
 
         combinedID='+'.join(self.Config['ID'])
         self._trackingtimefile = self.Config['OutputFilesPath']+os.sep+combinedID+'_%ikHz_%iPPW_' %(int(Frequency/1e3),BasePPW)+'ExecutionTimes.yml'
@@ -1383,6 +1385,12 @@ class BabelBrain(QWidget):
             self._vtk_visualization.raise_()
             self._vtk_visualization.activateWindow()
 
+    def _FindViewerRow(self,viewer,id):
+        for n,row in enumerate(viewer._layer_panel._rows):
+            if row._id == id:
+                return n,row
+        return -1,None
+
     def _UpdateVTKDomain(self,bFullyPopulate):
 
         if bFullyPopulate:
@@ -1420,20 +1428,23 @@ class BabelBrain(QWidget):
 
             if hasattr(self,'_NiftiSkull'):
                 self._UpdateVTKAcResults(n)
-            if hasattr(self,'_NiftiTemperature'):
-                self._UpdateVTKThermal()
         if hasattr(self,'_NiftiMergeAc'):
-            self._UpdateVTKMergedAcResults()   
+            self._UpdateVTKMergedAcResults()
+        for n in lTraj:
+            if hasattr(self,'_NiftiTemperature'):
+                self._UpdateVTKThermal(n)
+        if hasattr(self,'_NiftiMergedIntensity'):
+            self._UpdateVTKMergedThermalResults()
 
     def UpdateNiftiAcResults(self,NiftiSkull,NiftiWater,NTraj):
         self._NiftiSkull[NTraj]=NiftiSkull
         self._NiftiWater[NTraj]=NiftiWater
         self._UpdateVTKAcResults(NTraj)
 
-    def UpdateNiftiTemperatureResults(self,NiftiIntensity,NiftiTemperature):
-        self._NiftiIntensity=NiftiIntensity
-        self._NiftiTemperature=NiftiTemperature
-        self._UpdateVTKThermal()
+    def UpdateNiftiTemperatureResults(self,NiftiIntensity,NiftiTemperature,NTraj):
+        self._NiftiIntensity[NTraj]=NiftiIntensity
+        self._NiftiTemperature[NTraj]=NiftiTemperature
+        self._UpdateVTKThermal(NTraj)
     
     def _UpdateVTKAcResults(self,NTraj):
         if not hasattr(self,'_vtk_visualization'):
@@ -1443,50 +1454,58 @@ class BabelBrain(QWidget):
         # We remove previous entries if already available
         viewer =self._vtk_visualization.viewer[NTraj]
         for id in ['Skull','Water']:
-            for n,row in enumerate(viewer._layer_panel._rows):
-                if row._id == id:
-                    viewer._on_remove_requested(n)
-                    break
+            n,row=self._FindViewerRow(viewer,id)
+            if n>=0:
+                viewer._on_remove_requested(n)
+        
         viewer.add_overlay(self._NiftiSkull[NTraj],'Skull',id='Skull')
-        viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
-        viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
-        viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        viewer.add_overlay(self._NiftiWater[NTraj],'Water',id='Water')
-        viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
-        viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        viewer._layer_panel._rows[-1]._eye_btn.setChecked(False)
-        #we select skull for default windowing
-        viewer._layer_panel._rows[-2]._wl_btn.click()
+        n,row=self._FindViewerRow(viewer,'Skull')
+        row._opacity_slider.setValue(100)
+        row._cmap_combo.setCurrentIndex(5)
+        row._cutoff_edit.setText('0.25')
+        row._on_cutoff_changed()
 
-    def _UpdateVTKThermal(self):
+        viewer.add_overlay(self._NiftiWater[NTraj],'Water',id='Water')
+        n,row=self._FindViewerRow(viewer,'Water')
+        row._cmap_combo.setCurrentIndex(5)
+        row._cutoff_edit.setText('0.25')
+        row._on_cutoff_changed()
+        row._eye_btn.setChecked(False)
+        #we select skull for default windowing
+        n,row=self._FindViewerRow(viewer,'Skull')
+        row._wl_btn.click()
+
+    def _UpdateVTKThermal(self,NTraj):
         if not hasattr(self,'_vtk_visualization'):
             return
+        if self._NiftiIntensity[NTraj] is None:
+            return
         # We remove previous entries if already available
+        viewer =self._vtk_visualization.viewer[NTraj]
         for id in ['Intensity','Temperature']:
-            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
-                if row._id == id:
-                    self._vtk_visualization.viewer._on_remove_requested(n)
-                    break
+            n,row=self._FindViewerRow(viewer,id)
+            if n>=0:
+                viewer._on_remove_requested(n)
         # We hide  pressure fields
-        for id in ['Water','Skull']:
-            for n,row in enumerate(self._vtk_visualization.viewer._layer_panel._rows):
-                if row._id == id:
-                    row._eye_btn.setChecked(False)
-                    break
-        self._vtk_visualization.viewer.add_overlay(self._NiftiIntensity,'Intensity',id='Intensity')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.1')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        self._vtk_visualization.viewer.add_overlay(self._NiftiTemperature,'Temperature',id='Temperature')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._cutoff_edit.setText('37.05')
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._on_cutoff_changed()
-        self._vtk_visualization.viewer._layer_panel._rows[-1]._eye_btn.toggle()
+        for id in ['Water','Skull','MergedAc']:
+            n,row=self._FindViewerRow(viewer,id)
+            if n>=0:
+                row._eye_btn.setChecked(False)
+        viewer.add_overlay(self._NiftiIntensity[NTraj],'Intensity',id='Intensity')
+        n,row=self._FindViewerRow(viewer,'Intensity')
+        row._opacity_slider.setValue(100)
+        row._cmap_combo.setCurrentIndex(5)
+        row._cutoff_edit.setText('0.1')
+        row._on_cutoff_changed()
 
-        self._vtk_visualization.viewer._layer_panel._rows[-2]._wl_btn.click()
+        viewer.add_overlay(self._NiftiTemperature[NTraj],'Temperature',id='Temperature')
+        n,row=self._FindViewerRow(viewer,'Temperature')
+        row._cmap_combo.setCurrentIndex(5)
+        row._cutoff_edit.setText('37.05')
+        row._on_cutoff_changed()
+        row._eye_btn.toggle()
+        n,row=self._FindViewerRow(viewer,'Intensity')
+        row._wl_btn.click()
 
     def UpdateNiftiMergedAcResults(self,NiftiMergeAc):
         self._NiftiMergeAc=NiftiMergeAc
@@ -1498,15 +1517,60 @@ class BabelBrain(QWidget):
         # We remove previous entries if already available
         for viewer in self._vtk_visualization.viewer:
             for id in ['MergedAc']:
+                n,row=self._FindViewerRow(viewer,id)
+                if n>=0:
+                    viewer._on_remove_requested(n)
+    
+            # We hide  pressure fields
+            for id in ['Water','Skull']:
+                n,row=self._FindViewerRow(viewer,id)
+                if n>=0:
+                    row._eye_btn.setChecked(False)
+
+            viewer.add_overlay(self._NiftiMergeAc,'MergedAc',id='MergedAc')
+            n,row=self._FindViewerRow(viewer,'MergedAc')
+            row._opacity_slider.setValue(100)
+            row._cmap_combo.setCurrentIndex(5)
+            row._cutoff_edit.setText('0.25')
+            row._on_cutoff_changed()
+
+    def UpdateNiftiMergedThermalResults(self,NiftiIntensity,NiftiTemperature):
+        self._NiftiMergedIntensity=NiftiIntensity
+        self._NiftiMergedTemperature=NiftiTemperature
+        self._UpdateVTKMergedThermalResults()
+
+    def _UpdateVTKMergedThermalResults(self):
+        if not hasattr(self,'_vtk_visualization'):
+            return
+        # We remove previous entries if already available
+        for viewer in self._vtk_visualization.viewer:
+            for id in ['MergedTemperature','MergedIntensity']:
                 for n,row in enumerate(viewer._layer_panel._rows):
                     if row._id == id:
                         viewer._on_remove_requested(n)
                         break
-            viewer.add_overlay(self._NiftiMergeAc,'MergedAc',id='MergedAc')
-            viewer._layer_panel._rows[-1]._opacity_slider.setValue(100)
-            viewer._layer_panel._rows[-1]._cmap_combo.setCurrentIndex(5)
-            viewer._layer_panel._rows[-1]._cutoff_edit.setText('0.25')
-            viewer._layer_panel._rows[-1]._on_cutoff_changed()
+
+            for id in ['Water','Skull','MergedAc','Intensity','Temperature']:
+                for n,row in enumerate(viewer._layer_panel._rows):
+                    if row._id == id:
+                        row._eye_btn.setChecked(False)
+                        break
+            viewer.add_overlay(self._NiftiMergedIntensity,'MergedIntensity',id='MergedIntensity')
+            n,row=self._FindViewerRow(viewer,'MergedIntensity')
+            row._opacity_slider.setValue(100)
+            row._cmap_combo.setCurrentIndex(5)
+            row._cutoff_edit.setText('0.1')
+            row._on_cutoff_changed()
+
+            viewer.add_overlay(self._NiftiMergedTemperature,'MergedTemperature',id='MergedTemperature')
+            n,row=self._FindViewerRow(viewer,'MergedTemperature')
+            row._cmap_combo.setCurrentIndex(5)
+            row._cutoff_edit.setText('37.05')
+            row._on_cutoff_changed()
+            row._eye_btn.toggle()
+            n,row=self._FindViewerRow(viewer,'MergedIntensity')
+            row._wl_btn.click()
+            
 
     @Slot()
     def _closingVtkVisualization(self):
@@ -1627,6 +1691,9 @@ class BabelBrain(QWidget):
 
     def AllAcFieldsDone(self):
         return all(x is not None for x in self._NiftiSkull)
+    
+    def AllThermalFieldsDone(self):
+        return all(x is not None for x in self._NiftiTemperature)
         
 
 def get_color_at(widget, x,y):

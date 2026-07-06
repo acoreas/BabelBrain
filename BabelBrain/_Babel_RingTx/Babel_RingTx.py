@@ -123,7 +123,6 @@ class RingTx(BabelBaseTx):
             TPO=Skull['ZSteering']+self.Config['NaturalOutPlaneDistance']
 
         DistanceSkin = self._ZMaxSkin - Skull['TxMechanicalAdjustmentZ']*1e3
-
         ret = QMessageBox.question(self,'', "Acoustic sim files already exist with:.\n"+
                                 "ZSteering=%3.2f\n" %(TPO*1e3)+
                                 "TxMechanicalAdjustmentX=%3.2f\n" %(Skull['TxMechanicalAdjustmentX']*1e3)+
@@ -186,7 +185,7 @@ class RunAcousticSim(QObject):
         ##############
 
         print('Ideal Distance to program in TPO : ', TPODistance*1e3)
-        if self._mainApp.AcSim._KeyCorrection in self._mainApp.Config:
+        if self._mainApp.AcSim._KeyCorrection in self._mainApp.Config and not self._mainApp.bHasTxWeights():
             SelCorrection =self._mainApp.Config[self._mainApp.AcSim._KeyCorrection]
             Correction = np.polyval(self._mainApp.AcSim.Config['Corrections'][SelCorrection],TPODistance)
             print('Applying ZSteering correction: ',SelCorrection,Correction)

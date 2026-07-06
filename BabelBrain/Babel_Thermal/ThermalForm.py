@@ -99,10 +99,11 @@ class ThermalForm(QWidget):
 
     LEFT_PANEL_WIDTH = 380
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None,bMergedResults=False):
         super().__init__(parent)
         self.setObjectName("Babel_Thermal")
         self.setStyleSheet(_thermal_qss(self))
+        self._bMergedResults=bMergedResults
         self._build()
         apply_native_spinbox_style(self)  # Windows: compact stacked spin arrows
 
@@ -133,20 +134,21 @@ class ThermalForm(QWidget):
         lay.setSpacing(2)
 
         # Top action buttons (Calculate Thermal / Update Profile)
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
-        self.CalculateThermal = make_button(
-            "CalculateThermal", "Calculate Thermal Fields",
-            bold=True, min_height=40)
-        self.CalculateThermal.setStyleSheet("color: #e03030;")
-        actions.addWidget(self.CalculateThermal, stretch=1)
+        if not self._bMergedResults:
+            actions = QHBoxLayout()
+            actions.setSpacing(6)
+            self.CalculateThermal = make_button(
+                "CalculateThermal", "Calculate Thermal Fields",
+                bold=True, min_height=40)
+            self.CalculateThermal.setStyleSheet("color: #e03030;")
+            actions.addWidget(self.CalculateThermal, stretch=1)
 
-        self.SelectProfile = make_button(
-            "SelectProfile", "Update Profile and Calculate",
-            bold=True, min_height=40)
-        self.SelectProfile.setStyleSheet("color: #2db52d;")
-        actions.addWidget(self.SelectProfile, stretch=1)
-        lay.addLayout(actions)
+            self.SelectProfile = make_button(
+                "SelectProfile", "Update Profile and Calculate",
+                bold=True, min_height=40)
+            self.SelectProfile.setStyleSheet("color: #2db52d;")
+            actions.addWidget(self.SelectProfile, stretch=1)
+            lay.addLayout(actions)
 
         # Combination timing + duration/DC/PRF triplet
         comb_row = QHBoxLayout()
@@ -161,6 +163,7 @@ class ThermalForm(QWidget):
         triplet_lbl = QLabel("[Duration, DC, PRF]")
         triplet_lbl.setAlignment(Qt.AlignRight)
         lay.addWidget(triplet_lbl)
+
 
         # Isppa
         isppa_row = QHBoxLayout()
@@ -182,9 +185,18 @@ class ThermalForm(QWidget):
         isppaw_row.addWidget(self.IsppaWaterSpinBox)
         lay.addLayout(isppaw_row)
 
+        if self._bMergedResults:
+            for l in [isppa_row,isppaw_row]:
+                widgets = [l.itemAt(i).widget() for i in range(l.count()) if l.itemAt(i).widget() is not None]
+                for w in widgets:
+                    w.setVisible(False)
+
         # Babel_Thermal.py relies on (it calls `setItem(0..10, 0/1, …)`
         # without first growing the table).
-        self.tableWidget = QTableWidget(11, 2)
+        if self._bMergedResults:
+            self.tableWidget = QTableWidget(10, 2)
+        else:
+            self.tableWidget = QTableWidget(11, 2)
         self.tableWidget.setObjectName("tableWidget")
         self.tableWidget.setShowGrid(False)
         _hdr = self.tableWidget.horizontalHeader()
@@ -197,6 +209,7 @@ class ThermalForm(QWidget):
         self.tableWidget.setMinimumHeight(150)
         self.tableWidget.setSizePolicy(QSizePolicy.Expanding,
                                        QSizePolicy.Expanding)
+        self.tableWidget.setWordWrap(True)
         lay.addWidget(self.tableWidget, stretch=1)
 
         return frame
@@ -236,6 +249,11 @@ class ThermalForm(QWidget):
         self.DisplayDropDown = make_combo(
             "DisplayDropDown", items=["Maps", "Profiles"])
 
+        # Orthogonal plane to display (drives which axis IsppaScrollBar scrolls).
+        self.label_view = make_label("View", name="label_view")
+        self.SelViewDropDown = make_combo(
+            "SelViewDropDown", items=["XZ", "YZ", "XY"])
+
         self.IsppaScrollBar = QScrollBar(Qt.Horizontal)
         self.IsppaScrollBar.setObjectName("IsppaScrollBar")
         self.IsppaScrollBar.setEnabled(False)
@@ -254,6 +272,9 @@ class ThermalForm(QWidget):
         self.LocMTB = make_button("LocMTB", "Max. Temp. Brain")
         self.LocMTS = make_button("LocMTS", "Max. Temp. Skin")
         self.LocMTC = make_button("LocMTC", "Max. Temp. Skull")
+        self.LocTargets =  make_button("LocTargets", "Target")
+        if self._bMergedResults:
+            self.SelTarget = make_combo("SelTarget",items=self.parent()._MainApp.Config['ID'],width=60)
 
         # Both bottom rows share the top row's column split: a fixed-width left
         # zone sits under the control column, the rest aligns under the plot.
@@ -274,6 +295,8 @@ class ThermalForm(QWidget):
         left1_l.addStretch(3)
         row1.addWidget(left1)
 
+        row1.addWidget(self.label_view)
+        row1.addWidget(self.SelViewDropDown)
         row1.addWidget(self.IsppaScrollBar, stretch=1)
         row1.addWidget(self.SliceLabel)
         row1.addWidget(self.HideMarkscheckBox)
@@ -286,12 +309,25 @@ class ThermalForm(QWidget):
 
         left2 = QWidget()
         left2.setFixedWidth(self.LEFT_PANEL_WIDTH)
+        if len(self.parent()._MainApp.Config['ID'])>1 and not  self._bMergedResults:
+            nBox = QHBoxLayout()
+            nBox.setSpacing(0)
+            nBox.setContentsMargins(0, 0, 0, 0)
+            self.CombineTrajectories = make_button(
+            "CombineTrajectories", "Combine Trajectoriess", color="red")
+            nBox.addWidget(self.CombineTrajectories)
+            self.CombineTrajectories.setEnabled(False)
+            left2.setLayout(nBox)
         row2.addWidget(left2)
 
         row2.addStretch(1)
+        row2.addWidget(make_label('Go to:'))
         row2.addWidget(self.LocMTB)
         row2.addWidget(self.LocMTS)
         row2.addWidget(self.LocMTC)
+        row2.addWidget(self.LocTargets)
+        if self._bMergedResults:
+            row2.addWidget(self.SelTarget)
         row2.addStretch(1)
         outer.addLayout(row2)
 
