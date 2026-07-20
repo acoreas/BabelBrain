@@ -14,6 +14,14 @@ from  scipy.io import loadmat,savemat
 from BabelViscoFDTD.tools.RayleighAndBHTE import BHTE,BHTEMultiplePressureFields
 from BabelViscoFDTD.H5pySimple import SaveToH5py,ReadFromH5py
 from scipy.io import loadmat,savemat
+
+# Artifact recording (see BabelBrain/ArtifactIO.py); no-op unless BABEL_ARTIFACT_LOG is set.
+try:
+    from ArtifactIO import record as _rec_artifact
+except Exception:
+    def _rec_artifact(_p, **_k):
+        return _p
+
 from platform import platform
 from os.path import isfile
 from BabelViscoFDTD.tools.RayleighAndBHTE import  InitOpenCL, InitCuda, InitMetal, InitMLX
@@ -224,8 +232,6 @@ def AnalyzeLosses(pAmp,MaterialMap,LocIJK,Input,
 
         RatioLossesPeak=(pAmpTissue.max()/pAmpWater.max())**2
         print('Total losses ratio using single punctual measurement',RatioLossesPeak,np.log10(RatioLossesPeak)*10)
-
-
 
         if RatioLosses > (RatioLossesLoc+0.2):
             print('Warning: RatioLossesLoc is bigger than RatioLosses by more than 20%\nUsing water loc for ratio losses')
@@ -1219,7 +1225,7 @@ def CalculateTemperatureEffects(InputPData,
         SaveDict['TempProfileTarget']=np.hstack((PreviousData['TempProfileTarget'],TemperaturePoints[IndTarget,:]))
         SaveDict['TemperaturePoints']=np.hstack((PreviousData['TemperaturePoints'],TemperaturePoints))
         
-    print(f'CTS:L4:S3 total duration (time, steps): ({SaveDict['TimeProfileTarget'][-1]},{TemperaturePoints.shape[1]})')
+    print(f"CTS:L4:S3 total duration (time, steps): ({SaveDict['TimeProfileTarget'][-1]},{TemperaturePoints.shape[1]})")
         
     SaveDict['MI']=MI
     SaveDict['x_vec']=xf*1e3
@@ -1283,8 +1289,10 @@ def CalculateTemperatureEffects(InputPData,
         SaveDict['MergedPressureRatio']=MergedPressureRatio
     
     SaveToH5py(SaveDict,outfname+'.h5')
+    _rec_artifact(outfname+'.h5')
     savemat(outfname+'.mat',SaveDict)
-    
+    _rec_artifact(outfname+'.mat')
+
     return outfname
         
 

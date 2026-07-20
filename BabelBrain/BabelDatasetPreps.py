@@ -11,6 +11,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.linalg as npl
 import os
+
+# Artifact recording (see ArtifactIO.py); no-op unless BABEL_ARTIFACT_LOG is set.
+try:
+    from ArtifactIO import record as _rec_artifact
+except Exception:
+    def _rec_artifact(_p, **_k):
+        return _p
 import trimesh
 import nibabel
 from nibabel import processing
@@ -45,9 +52,9 @@ except:
 
 
 try:
-    from ConvMatTransform import ReadTrajectoryBrainsight, GetIDTrajectoryBrainsight,read_itk_affine_transform,itk_to_BSight
+    from ConvMatTransform import ReadTrajectoryBrainsight, read_itk_affine_transform,itk_to_BSight
 except:
-    from .ConvMatTransform import ReadTrajectoryBrainsight, GetIDTrajectoryBrainsight,read_itk_affine_transform,itk_to_BSight
+    from .ConvMatTransform import ReadTrajectoryBrainsight, read_itk_affine_transform,itk_to_BSight
 
 try:
     from FileManager import FileManager
@@ -324,6 +331,7 @@ def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
                     [shell,
                     path_script,
                     SimbNINBSRoot,
+                    scriptbase,
                     reference,
                     mesh,
                     finalname], capture_output=True, text=True
@@ -1008,6 +1016,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                     with CodeTimer("CTS:L3:S1: saving CTnamenonfiltered",unit='s'):
                         nCTNifti=nibabel.Nifti1Image(ndataCT, nCT.affine, nCT.header)
                         nCTNifti.to_filename(CTnamenonfiltered)
+                        _rec_artifact(CTnamenonfiltered)
 
                 # ndataCT[nfct_rim]=CTBoneMaxFilter[nfct_rim]
                 ndataCT[edge_voxels] = correct_vals
@@ -1016,6 +1025,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                     with CodeTimer("CTS:L3:S1: saving CTnamefiltered",unit='s'):
                         nCTNifti=nibabel.Nifti1Image(ndataCT, nCT.affine, nCT.header)
                         nCTNifti.to_filename(CTnamefiltered)
+                        _rec_artifact(CTnamefiltered)
 
                 gc.collect()
 
@@ -1065,6 +1075,7 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
                 AirRegions=nibabel.Nifti1Image(AirRegions, nCT.affine, nCT.header)
                 outname=os.path.dirname(T1Conformal_nii)+os.sep+prefix+'AirRegions.nii.gz'
                 AirRegions.to_filename(outname)
+                _rec_artifact(outname)
 
     with CodeTimer("CTS:L3:S1: final median filter ",unit='s'):
         if CT_or_ZTE_input is not None:

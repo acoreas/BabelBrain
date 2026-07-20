@@ -61,7 +61,6 @@ from CalculateMaskProcess import CalculateMaskProcess
 from CTZTEProcessing import ConfirmPseudoCT
 from ConvMatTransform import (
     BSight_to_itk,
-    GetIDTrajectoryBrainsight,
     ReadTrajectoryBrainsight,
     GetBrainSightHeader,
     itk_to_BSight,
@@ -70,7 +69,7 @@ from ConvMatTransform import (
 )
 from SelFiles.SelFiles import SelFiles,ValidThermalProfile
 
-from Options.Options import AdvancedOptions, OptionalParams
+from Options.Options import AdvancedOptions, OptionalParams, ApplyAdvancedConfig
 from ClockDialog import ClockDialog
 from GUIComponents.nifti_viewer import NiftiViewerWindow
 
@@ -265,7 +264,11 @@ def GetInputFromBrainsight():
             if len(l)>0:
                 res['outputfiles_path']=l   
 
-        ID=GetIDTrajectoryBrainsight(PathMat4Trajectory)
+        ID=ReadTrajectoryBrainsight(PathMat4Trajectory,bGetID=True)[1]
+        if type(ID) is not list:
+            ID=[ID] #we enforce a list of 1 ID to simpliy processing
+        IdStr='+'.join(ID)
+
         header =  GetBrainSightHeader(PathMat4Trajectory)
         if header['Version']=='13':
             # EndWithError("Version 13 of export trajectory not supported.\nEnding BabelBrain execution")
@@ -314,10 +317,10 @@ def GetInputFromBrainsight():
         
         
         #for the time being, we need the trajectory to be next to T1w
-        RPath=outpath+os.sep+ID+'.txt'
+        RPath=outpath+os.sep+IdStr+'.txt'
         assert(shutil.copyfile(PathMat4Trajectory,RPath))
 
-        print('ID,RPath',ID,RPath)
+        print('ID,RPath',IdStr,RPath)
 
         res['Mat4Trajectory']=RPath
         
@@ -438,10 +441,15 @@ class BabelBrain(QWidget):
             ComputingBackend=3
         elif Backend=='MLX':
             ComputingBackend=4
+        elif Backend=='Server':          # remote server offloads the GPU work
+            ComputingBackend=5
 
         self.Config['bUseRayleighForWater']= True
         self.Config['ComputingBackend']=ComputingBackend
         self.Config['ComputingDevice']=ComputingDevice
+        # Remote-server details when ComputingBackend==5 (else None); consumed by
+        # the client/server offload path (RunServerCalculation).
+        self.Config['RemoteServer']=widget.GetSelectedServer() if ComputingBackend==5 else None
         self.Config['TxSystem']=widget.ui.TransducerTypecomboBox.currentText()
 
         self.Config['simbnibs_path']=simbnibs_path
@@ -501,16 +509,10 @@ class BabelBrain(QWidget):
             
         #default values for advanced features 
 
-        self._DefaultOptions=OptionalParams(self._AllTransducers)  
-        
-        for k in self._DefaultOptions.keys():
-            if k not in self.Config:
-                self.Config[k]=getattr(self._DefaultOptions,k)
-            elif k=='TxOptimizedWeights':
-                #we check if we are missing a Tx
-                for tx in self._AllTransducers:
-                    if tx not in self.Config['TxOptimizedWeights']:
-                        self.Config['TxOptimizedWeights'][tx]=getattr(self._DefaultOptions,k)[tx]
+        # Fill any advanced-option keys missing from Config with their defaults
+        # (force=False preserves a previously-loaded configuration). This is the
+        # shared source of truth also used by scripting's reset_advanced_config.
+        self._DefaultOptions=ApplyAdvancedConfig(self.Config,self._AllTransducers,force=False)
             
         self.Config['AdvancedParamsFile']=self.Config['OutputFilesPath']+os.sep+os.path.split(self.Config['T1W'])[1].split('.nii')[0]+'-AdvancedParams.yaml'
         self.SaveLatestSelection()
@@ -561,12 +563,12 @@ class BabelBrain(QWidget):
 
         mem = psutil.virtual_memory()
         info = cpuinfo.get_cpu_info()
-        print(f'CPU: {info['brand_raw']}')
+        print(f"CPU: {info['brand_raw']}")
         print(f'Total memory:{mem.total / 2**30:.2f} GB')
-        self.LogTelemetry(f'CTS:L1: CPU: {info['brand_raw']}')
+        self.LogTelemetry(f"CTS:L1: CPU: {info['brand_raw']}")
         self.LogTelemetry(f'CTS:L1: Memory: {mem.total / 2**30:.2f} GB')
         self.LogTelemetry(f'CTS:L1: GPU: {Backend} {ComputingDevice}')
-        self.LogTelemetry(f'CTS:L4: Device: {self.Config['TxSystem']}')
+        self.LogTelemetry(f"CTS:L4: Device: {self.Config['TxSystem']}")
         self.SendTelemetry()
         
         
@@ -579,6 +581,13 @@ class BabelBrain(QWidget):
         self.SendTelemetry(waittocomplete=True)
         if hasattr(self,'_vtk_visualization'):
             self._vtk_visualization.close()
+        # Release any live remote session (server bb + temp workspace).
+        if getattr(self,'_RemoteSession',None):
+            try:
+                from RunServerCalculation import cleanup_session
+                cleanup_session(self)
+            except Exception:
+                pass
         super().closeEvent(event)  # let the default close logic run
 
     def centerOnScreen(self):
@@ -620,6 +629,11 @@ class BabelBrain(QWidget):
             self.moveTimer.start() # the timer will make the move of the wait dialog less clunky
 
     def SaveLatestSelection(self):
+        # In server mode the configuration is memory-only: never persist to
+        # lastselection.yaml (each client job carries its own config). Saving is
+        # allowed only for a normal, local (non-server) session.
+        if os.environ.get('BABEL_SERVER_MODE') == '1':
+            return
         if not os.path.isfile(_LastSelConfig):
             try:
                 os.makedirs(os.path.split(_LastSelConfig)[0],exist_ok=True)
@@ -815,8 +829,13 @@ class BabelBrain(QWidget):
         self.UpdateFrequencyFloat(0)
         self.UpdateMaskParameters()
 
-        stdout = OutputWrapper(self, True)
-        stdout.outputWritten.connect(self.handleOutput)
+        # In server mode there is no GUI terminal to mirror to, and widgets are
+        # created/destroyed per job — hijacking sys.stdout would leave it
+        # dangling on a deleted QObject (RuntimeError on the next print). Keep the
+        # real stdout for the server console/log.
+        if os.environ.get('BABEL_SERVER_MODE') != '1':
+            stdout = OutputWrapper(self, True)
+            stdout.outputWritten.connect(self.handleOutput)
 #        stderr = OutputWrapper(self, False)
 #        stderr.outputWritten.connect(self.handleOutput)
 
@@ -934,8 +953,29 @@ class BabelBrain(QWidget):
         #we run first trajectory, most cases it will be only one
         self.ExecuteTrajectory()
 
+    def IsRemoteBackend(self):
+        """True when the selected computing engine is a remote server (offload)."""
+        return self.Config.get('ComputingBackend')==5
+
+    def _NotifyRemoteNotWired(self):
+        srv=(self.Config.get('RemoteServer') or {}).get('name','the remote server')
+        msgBox = QMessageBox(self.Widget)
+        msgBox.setIcon(QMessageBox.Information)
+        msgBox.setText("Remote execution on '%s' is being set up and is not available "
+                       "yet in this build.\n\nSelect a local GPU in the computing-engine "
+                       "dropdown to run now." % srv)
+        msgBox.exec()
+
+    def _NotifyRemoteMultiTrajUnsupported(self):
+        msgBox = QMessageBox(self.Widget)
+        msgBox.setIcon(QMessageBox.Information)
+        msgBox.setText("Remote execution currently supports a single trajectory.\n\n"
+                       "Use a single-trajectory input for remote offload, or select a "
+                       "local GPU for multi-trajectory runs.")
+        msgBox.exec()
+
     def ExecuteTrajectory(self):
-        
+
         basedir = self.Config['OutputFilesPath']
         if not os.path.isdir(basedir):
             try:
@@ -946,13 +986,30 @@ class BabelBrain(QWidget):
                 msgBox.setText("Unable to create directory to save results at:\n" + basedir)
                 msgBox.exec()
                 raise
-                
+
         if not os.path.isfile(self._trackingtimefile):
             self.UpdateComputationalTime('domain',0.0) #this will initalize the trackig file
-        
+
         print('outname',self._outnameMask[self._TrajectoryNumber])
         bCalcMask=False
-        if os.path.isfile(self._outnameMask[self._TrajectoryNumber]) and os.path.isfile(self._T1W_resampled_fname[self._TrajectoryNumber]):
+        if self.IsRemoteBackend():
+            # Remote Step 1 runs ALL trajectories in a single server job. Only the
+            # first trajectory triggers the server run; once it finishes it has
+            # downloaded every trajectory's mask, so the chained trajectories just
+            # reload from disk (bCalcMask stays False). _bRemotePlanningComplete
+            # is set True by VerifyResults (recalc) or here (reload).
+            if self._TrajectoryNumber == 0:
+                self._bRemotePlanningComplete = False
+                if os.path.isfile(self._outnameMask[0]) and os.path.isfile(self._T1W_resampled_fname[0]):
+                    ret = QMessageBox.question(self.Widget,'', "Mask file already exists.\nDo you want to recalculate?\nSelect No to reload", QMessageBox.Yes | QMessageBox.No)
+                    bCalcMask = (ret == QMessageBox.Yes)
+                else:
+                    bCalcMask = True
+                if not bCalcMask:
+                    self._bRemotePlanningComplete = True
+            else:
+                bCalcMask = False       # chained trajectory: reload downloaded files
+        elif os.path.isfile(self._outnameMask[self._TrajectoryNumber]) and os.path.isfile(self._T1W_resampled_fname[self._TrajectoryNumber]):
             # Parent to self.Widget (the styled MainForm) so the dialog inherits
             # the compact _FORM_QSS; self is the top-level app and carries no
             # stylesheet of its own.
@@ -969,7 +1026,14 @@ class BabelBrain(QWidget):
             # successful run that should be followed by another trajectory.
             self._bRunNextTrajectory = False
             self.thread = QThread()
-            self.worker = RunMaskGeneration(self)
+            if self.IsRemoteBackend():
+                # Offload Step 1 to the configured remote server. The worker
+                # mirrors RunMaskGeneration's signals, so the wiring below is
+                # identical for local and remote runs.
+                from RunServerCalculation import RunServerCalculation, STEP_PLANNING
+                self.worker = RunServerCalculation(self, STEP_PLANNING)
+            else:
+                self.worker = RunMaskGeneration(self)
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.VerifyResults)
@@ -1073,6 +1137,10 @@ class BabelBrain(QWidget):
 
     def VerifyResults(self,output_files):
         self.hideClockDialog()
+        # Remote Step 1 computed every trajectory in one server job and downloaded
+        # them all; mark it so the chained trajectories reload instead of re-running.
+        if self.IsRemoteBackend():
+            self._bRemotePlanningComplete = True
         if self.Config['bUseCT']:
             if self.Config['CTType'] in [2,3]:
                 if not ConfirmPseudoCT(output_files['pCTfname']):
@@ -1654,6 +1722,11 @@ class BabelBrain(QWidget):
             raise ValueError('type of step to track time not valid -'+step)
         with open(self._trackingtimefile,'w') as f:
             yaml.dump(self._TrackingTime,f,yaml.SafeDumper)
+        try:   # record the execution-times artifact (no-op outside server mode)
+            from ArtifactIO import record as _rec
+            _rec(self._trackingtimefile)
+        except Exception:
+            pass
 
     def CommomAcOptions(self):
         kargs={}
@@ -1933,11 +2006,87 @@ def main():
     
     parser = MyParser(prog='BabelBrain', usage='python %(prog)s.py [options]',description='Run BabelBrain simulation',  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-bInUseWithBrainsight', action='store_true')
+    # Scripting / integration entry (works in the frozen binary too):
+    #   BabelBrain --execute script.py    run a Python script, then quit (exit 0/non-0)
+    #   BabelBrain --code "..."           run an inline snippet
+    #   --headless                        no window (Qt offscreen), for CI
+    #   --do-not-use-last-selection       do NOT seed inputs from the last GUI session
+    #                                     (by default scripted inputs are seeded from it)
+    parser.add_argument('--execute', metavar='SCRIPT.py', default=None,
+                        help='Run a Python script against the app, then exit.')
+    parser.add_argument('--code', metavar='"CODE"', default=None,
+                        help='Run an inline Python snippet against the app, then exit.')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run without a visible window (Qt offscreen platform). '
+                             'Without this flag the GUI is shown while the script runs.')
+    parser.add_argument('--keep-open', action='store_true',
+                        help='Leave BabelBrain open and interactive after the script '
+                             'finishes (default: close and exit). Ignored with --headless.')
+    parser.add_argument('--do-not-use-last-selection', dest='use_last_selection',
+                        action='store_false', default=True,
+                        help='Do not seed scripted inputs from the last GUI selection '
+                             '(seeding is the default; explicit launch() inputs override it).')
+    # Server mode (v0): expose the pipeline over a small HTTP/JSON job API.
+    parser.add_argument('--serve', action='store_true',
+                        help='Run BabelBrain as a job server (HTTP/JSON). See server.py.')
+    parser.add_argument('--serve-host', default='127.0.0.1',
+                        help='Server bind address (default localhost).')
+    parser.add_argument('--serve-port', type=int, default=8760,
+                        help='Server port.')
+    parser.add_argument('--serve-token', default=None,
+                        help='Optional bearer token required on all endpoints '
+                             '(or set BABEL_SERVER_TOKEN).')
+    parser.add_argument('--serve-workspace-root', default=None,
+                        help='Parent directory for temp upload workspaces '
+                             '(default: system temp; or BABEL_SERVER_WORKSPACE_ROOT).')
+    parser.add_argument('--serve-session-timeout', type=int, default=0,
+                        help='Idle seconds before a persistent (keep_alive) session '
+                             'is auto-closed (0 = never; or BABEL_SERVER_SESSION_TIMEOUT).')
+    parser.add_argument('--print-GPUs-available', action='store_true',
+                        help='List the GPUs the server can use (index: name [backend]) '
+                             'and exit.')
+    parser.add_argument('--use-GPUs', default=None,
+                        help='Comma-separated GPU indices (from --print-GPUs-available) '
+                             'the server may schedule jobs onto (default: all; or '
+                             'BABEL_SERVER_USE_GPUS). Enables concurrent multi-GPU runs.')
 
-    args = parser.parse_args()
+    # parse_known_args so platform-injected args (e.g. macOS -psn_...) don't
+    # abort — but still reject genuine typos/unknown flags (e.g. --server instead
+    # of --serve) with a clear message instead of silently ignoring them.
+    args, _unknown = parser.parse_known_args()
+    _unknown = [a for a in _unknown if not a.startswith('-psn_')]
+    if _unknown:
+        parser.print_usage(sys.stderr)
+        sys.stderr.write("error: unrecognized arguments: %s\n" % " ".join(_unknown))
+        sys.stderr.write("Run 'python BabelBrain.py --help' for the list of options.\n")
+        sys.exit(2)
+
+    if args.headless:
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        # No display: skip the matplotlib canvas rendering in the Step 2/3 result
+        # views. The data/table work still runs (the table feeds the CSV export);
+        # only the drawing is skipped — see the _showMatplotlibVisualization guards.
+        os.environ.setdefault('BABEL_NO_PLOTS', '1')
 
     app = QApplication([])
     _apply_color_scheme(app)
+
+    # List the GPUs the server could schedule onto, then exit. Needs the
+    # QApplication above (GPU discovery goes through the SelFiles widget).
+    if getattr(args, 'print_GPUs_available', False):
+        import server
+        server.print_available_gpus()
+        sys.exit(0)
+
+    # Scripting mode: hand control to the scripting engine and exit with its code.
+    if args.execute or args.code:
+        import scripting
+        sys.exit(scripting.run_scripting(app, args))
+
+    # Server mode: run the HTTP job server + Qt loop until interrupted.
+    if args.serve:
+        import server
+        sys.exit(server.run_server(app, args))
     # Re-apply if the user switches dark/light mode while the app is running.
     # colorSchemeChanged is available from Qt 6.5; guard for older installs.
     try:
@@ -2008,6 +2157,8 @@ def main():
                     Backend='Metal'
                 elif prevConfig['ComputingBackend']==4:
                     Backend='MLX'
+                elif prevConfig['ComputingBackend']==5:
+                    Backend='Server'
                 if len(Backend)>0:
                     selwidget.SelectComputingEngine(GPU=GPU,Backend=Backend)
 

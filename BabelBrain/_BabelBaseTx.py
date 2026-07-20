@@ -6,6 +6,13 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout,QMessageBox, QTabWidget
 from PySide6.QtCore import Slot, Signal, QObject, QThread, Qt
 from BabelViscoFDTD.H5pySimple import ReadFromH5py,SaveToH5py
 
+# Artifact recording (see ArtifactIO.py); no-op unless BABEL_ARTIFACT_LOG is set.
+try:
+    from ArtifactIO import record as _rec_artifact
+except Exception:
+    def _rec_artifact(_p, **_k):
+        return _p
+
 import numpy as np
 import os
 import time
@@ -270,8 +277,16 @@ class BabelBaseTx(QWidget):
             bCalcFields = True
         self._bRecalculated = True
         if bCalcFields:
-            self._LaunchAcousticSim(self._CreateAcousticWorker(),
-                                    self._SimulationFinishedSlot())
+            if getattr(self._MainApp, 'IsRemoteBackend', lambda: False)():
+                # Offload Step 2 to the remote server, reusing the session Step 1
+                # opened. The worker mirrors the acoustic worker's signals; its
+                # finished slot (UpdateAcResults) reloads the downloaded results.
+                from RunServerCalculation import RunServerCalculation, STEP_ACOUSTIC
+                worker = RunServerCalculation(self._MainApp, STEP_ACOUSTIC,
+                                              trajectory=self._TrajectoryNumber)
+            else:
+                worker = self._CreateAcousticWorker()
+            self._LaunchAcousticSim(worker, self._SimulationFinishedSlot())
         else:
             self._ReloadExistingResults()
 
@@ -371,13 +386,17 @@ class BabelBaseTx(QWidget):
             self._BuildAcResultFigure(panel)     # fresh fig/canvas in this tab's plot host
             self._ActivatePanel(panel)           # mirror data into self._* aliases
             self._SyncScrollAndDistance(panel)   # scrollbar defaults + distance label
-            self._RenderAcResultPanel(panel)
+            # Headless (server): the data/aliases above are functional and stay;
+            # only the heavy contour/colourbar drawing is skipped (no display).
+            if os.environ.get('BABEL_NO_PLOTS') != '1':
+                self._RenderAcResultPanel(panel)
             self._bRecalculated = False
         else:
             if panel.get('figure') is None:
                 return
             self._ActivatePanel(panel)
-            self._RenderAcResultPanel(panel)
+            if os.environ.get('BABEL_NO_PLOTS') != '1':
+                self._RenderAcResultPanel(panel)
 
     def _ActivatePanel(self, panel):
         '''
@@ -823,16 +842,27 @@ class BabelBaseTx(QWidget):
         # frequency); the GUI updates happen in _CombineTrajectoriesFinished on
         # the main thread.  Reuses the shared acoustic-sim thread plumbing
         # (hourglass dialog, telemetry, error handling).
-        bCalcMerge=False
+        # Compute by default — including the first combine, when no merged file
+        # exists yet. Only reload when a merged result is already present and the
+        # user declines to recalculate. (Mirrors Step-3 thermal RunSimulation;
+        # the previous default reloaded a non-existent file on a fresh combine.)
+        bCalcMerge=True
         if os.path.isfile(self._MainApp._merged_prefix_path + 'Merged_NORM.nii.gz'):
             ret = QMessageBox.question(self.Widget,'', "Combined results exists.\nDo you want to recalculate?\nSelect No to reload", QMessageBox.Yes | QMessageBox.No)
 
-            if ret == QMessageBox.Yes:
-                bCalcMerge=True
+            if ret == QMessageBox.No:
+                bCalcMerge=False
 
         if bCalcMerge:
-            self._LaunchAcousticSim(RunCombineTrajectories(self._MainApp),
-                                self._CombineTrajectoriesFinished)
+            if getattr(self._MainApp, 'IsRemoteBackend', lambda: False)():
+                # Offload the merge to the remote server: the worker ensures every
+                # trajectory's acoustic is loaded there, clicks CombineTrajectories,
+                # and downloads the merged result for _CombineTrajectoriesFinished.
+                from RunServerCalculation import RunServerCalculation, STEP_ACOUSTIC
+                worker = RunServerCalculation(self._MainApp, STEP_ACOUSTIC, combine=True)
+            else:
+                worker = RunCombineTrajectories(self._MainApp)
+            self._LaunchAcousticSim(worker, self._CombineTrajectoriesFinished)
         else:
             self._CombineTrajectoriesFinished()
 
@@ -912,6 +942,9 @@ class RunCombineTrajectories(QObject):
             cfg['output']={'amp':Path(self._MainApp._merged_prefix_path+'Merged_NORM.nii.gz')}
 
             do_complex_merge(cfg)
+            # do_complex_merge writes Merged_NORM.nii.gz directly; record it so
+            # the remote client downloads it (read by _CombineTrajectoriesFinished).
+            _rec_artifact(self._MainApp._merged_prefix_path+'Merged_NORM.nii.gz')
             MergedNifti=nibabel.load(cfg['output']['amp'])
             
             transformed=[]
@@ -1061,6 +1094,7 @@ class RunCombineTrajectories(QObject):
 
                 
             SaveToH5py(DataForSim,self._MainApp._merged_prefix_path+'Merged_DataForSim.h5')
+            _rec_artifact(self._MainApp._merged_prefix_path+'Merged_DataForSim.h5')
             #Now water results
             if len(transformed_refocus)>0:
                 for k in ['Transformed_Refocus','p_amp_refocus','p_complex_refocus']:
@@ -1070,6 +1104,7 @@ class RunCombineTrajectories(QObject):
             DataForSim['Transformed']=transformed_water
             DataForSim['MaterialMap'][:,:,:]=0
             SaveToH5py(DataForSim,self._MainApp._merged_prefix_path+'Water_Merged_DataForSim.h5')
+            _rec_artifact(self._MainApp._merged_prefix_path+'Water_Merged_DataForSim.h5')
 
             TotalTime=time.time()-T0
             print('Total time',TotalTime)

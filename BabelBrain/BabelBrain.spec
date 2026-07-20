@@ -86,7 +86,13 @@ block_cipher = None
 
 datas = []
 binaries = []
-hiddenimports = []
+# 'scripting' and 'server' are imported lazily inside BabelBrain.main() for the
+# --execute / --code and --serve CLI entries; 'ArtifactIO' is imported by the
+# server and (guarded) by the pipeline modules. List them so the frozen binary
+# always bundles them.
+hiddenimports = ['scripting', 'server', 'ArtifactIO',
+                 'RemoteServers', 'RunServerCalculation',
+                 'client_functions', 'GUIComponents.RemoteServerDialog']
 upx_exclude_list = []
 
 # ==============================================================================

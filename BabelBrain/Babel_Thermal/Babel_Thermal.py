@@ -3,6 +3,13 @@ import os
 from pathlib import Path
 import sys
 from multiprocessing import Process,Queue
+
+# Artifact recording (see ArtifactIO.py); no-op unless BABEL_ARTIFACT_LOG is set.
+try:
+    from ArtifactIO import record as _rec_artifact
+except Exception:
+    def _rec_artifact(_p, **_k):
+        return _p
 from collections import UserDict
 
 from PySide6.QtWidgets import (QApplication, QWidget,QGridLayout,
@@ -563,7 +570,16 @@ class Babel_Thermal(QWidget):
             ExtraData = self._CaptureFromAcSim(
                 self._MainApp.AcSim.GetExtraDataForThermal, t)
             self.thread = QThread()
-            self.worker = RunThermalSim(self._MainApp, case, bRefocus, ExtraData,bMergedSimulation,MergedPressureRatio)
+            if getattr(self._MainApp, 'IsRemoteBackend', lambda: False)():
+                # Offload Step 3 to the remote server, reusing Step 1's session.
+                # For a merged run, combine=True clicks CombineTrajectories on the
+                # server (which computes the merged thermal). finished ->
+                # UpdateThermalResults reloads the downloaded H5/nii.
+                from RunServerCalculation import RunServerCalculation, STEP_THERMAL
+                self.worker = RunServerCalculation(self._MainApp, STEP_THERMAL,
+                                                   trajectory=t, combine=bMergedSimulation)
+            else:
+                self.worker = RunThermalSim(self._MainApp, case, bRefocus, ExtraData,bMergedSimulation,MergedPressureRatio)
             self.worker.moveToThread(self.thread)
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(self.UpdateThermalResults)
@@ -659,6 +675,11 @@ class Babel_Thermal(QWidget):
     def _showMatplotlibVisualization(self,bUpdatePlot=True,OverWriteIsppa=None,bIsppaBrainToWater=True):
         if self.bDisableUpdate:
             return
+        # Headless (server): run the metric/table population AND the functional
+        # temperature/intensity NIfTI update (feeds ExportSummary and, via
+        # AllThermalFieldsDone, enables CombineTrajectories) — but skip the 2D
+        # matplotlib drawing (there is no display). See the `_headless` guard.
+        _headless = os.environ.get('BABEL_NO_PLOTS') == '1'
         self._MainApp.Widget.tabWidget.setEnabled(True)
         self.Widget.ExportSummary.setEnabled(True)
         self.Widget.ExportMaps.setEnabled(True)
@@ -704,6 +725,16 @@ class Babel_Thermal(QWidget):
                                                         self.Config['BaseIsppa'],
                                                         combination['PRF'],
                                                         combination['Repetitions'])+'.h5'
+                if not os.path.isfile(ThermalName):
+                    # The thermal result does not exist yet. This fires when a
+                    # parameter-change signal (e.g. UpdateIsppaWater) triggers a
+                    # display refresh BEFORE the calculation has run — notably on
+                    # the headless server while the client's parameters are being
+                    # replayed. There is nothing to show: reset and bail out
+                    # instead of crashing on a missing file.
+                    self._NiftiThermalNames=[]
+                    self._ThermalResults=[]
+                    return
                 self._NiftiThermalNames.append(os.path.splitext(ThermalName)[0])
                 self._ThermalResults.append(ReadFromH5py(ThermalName))
             if self.Config['bConcatenateSimulations']:
@@ -912,7 +943,11 @@ class Babel_Thermal(QWidget):
             self.Widget.tableWidget.resizeRowToContents(4)
 
         AdjustedTemp=((DataThermal['TemperaturePoints']-BaselineTemperature)*IsppaRatio+BaselineTemperature)
-        DoseUpdate=np.trapezoid(RCoeff(AdjustedTemp)**(43.0-AdjustedTemp),dx=DataThermal['dt'],axis=1)/60
+        try:
+            DoseUpdate=np.trapezoid(RCoeff(AdjustedTemp)**(43.0-AdjustedTemp),dx=DataThermal['dt'],axis=1)/60
+        except:
+            #we need to call the old function for older versions of Numpy
+            DoseUpdate=np.trapz(RCoeff(AdjustedTemp)**(43.0-AdjustedTemp),dx=DataThermal['dt'],axis=1)/60
    
         MTT=(DataThermal['TempEndFUS'][tuple(Loc)]-BaselineTemperature)*IsppaRatio+BaselineTemperature
         if self._MainApp.Config['bForceHomogenousMedium']:
@@ -981,7 +1016,24 @@ class Babel_Thermal(QWidget):
                 Intensity[:,:,DataThermal['ZIntoSkinPixels']]=0
             else:
                 Intensity[:,:,0]=0
-           
+
+            # Temperature/intensity NIfTI + per-trajectory "done" marker are
+            # FUNCTIONAL (AllThermalFieldsDone -> CombineTrajectories button; the
+            # VTK overlay inside is guarded), so update them before the drawing.
+            if not self._IsMergedTab():
+                NiftiIntensity=nibabel.Nifti1Image(np.flip(Intensity,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
+                NiftiTemperature=nibabel.Nifti1Image(np.flip(Temperature,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
+                self._MainApp.UpdateNiftiTemperatureResults(NiftiIntensity,NiftiTemperature,self._TrajectoryNumber)
+            else:
+                NiftiIntensity=nibabel.Nifti1Image(np.transpose(np.flip(Intensity,axis=2).astype(np.float32),(1,2,0)),
+                                                   affine=self._MainApp._NiftiMergeAc.affine)
+                NiftiTemperature=nibabel.Nifti1Image(np.transpose(np.flip(Temperature,axis=2).astype(np.float32),(1,2,0)),
+                                                   affine=self._MainApp._NiftiMergeAc.affine)
+                self._MainApp.UpdateNiftiMergedThermalResults(NiftiIntensity,NiftiTemperature)
+
+            if _headless:
+                return   # table + NIfTI done above; no display -> skip the 2D drawing
+
             if not hasattr(self,'_prevDisplay'):
                 self._prevDisplay = -1 #we set the initial plotting
             IntensityMap=self._SlicePlane(Intensity,SelY,axis).T.copy()
@@ -1155,20 +1207,6 @@ class Babel_Thermal(QWidget):
             self._prevDisplay=WhatDisplay
             self._prevView=vp['view']
 
-            # Per-trajectory NIfTI/VTK overlays are keyed by trajectory index; the
-            # Merged tab has no such slot (there is no merged thermal viewer), so
-            # skip the 3D update for it — the 2D matplotlib view above is enough.
-            if not self._IsMergedTab():
-                NiftiIntensity=nibabel.Nifti1Image(np.flip(Intensity,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
-                NiftiTemperature=nibabel.Nifti1Image(np.flip(Temperature,axis=2).astype(np.float32),affine=self._MainApp._NiftiSkull[self._TrajectoryNumber].affine)
-                self._MainApp.UpdateNiftiTemperatureResults(NiftiIntensity,NiftiTemperature,self._TrajectoryNumber)
-            else:
-                NiftiIntensity=nibabel.Nifti1Image(np.transpose(np.flip(Intensity,axis=2).astype(np.float32),(1,2,0)),
-                                                   affine=self._MainApp._NiftiMergeAc.affine)
-                NiftiTemperature=nibabel.Nifti1Image(np.transpose(np.flip(Temperature,axis=2).astype(np.float32),(1,2,0)),
-                                                   affine=self._MainApp._NiftiMergeAc.affine)
-                self._MainApp.UpdateNiftiMergedThermalResults(NiftiIntensity,NiftiTemperature)
-
     @Slot()
     def UpdateThermalResults(self):
         # A merged run renders into the dedicated "Merged" tab; a normal run
@@ -1274,6 +1312,7 @@ class Babel_Thermal(QWidget):
         DataToExport['AdjustRAS']=self.Widget.tableWidget.item(4,1).data(QtCore.Qt.UserRole)
         
         pd.DataFrame.from_dict(data=DataToExport, orient='index').to_csv(outCSV, header=False)
+        _rec_artifact(outCSV)
         currentIsppa=self.Widget.IsppaSpinBox.value()
         currentCombination=self.Widget.SelCombinationDropDown.currentIndex()
         #now we create new Table to export safety metrics based on timing options and Isppa
@@ -1338,6 +1377,7 @@ class Babel_Thermal(QWidget):
                     DataToExport[k].append(data)
                 
             pd.DataFrame.from_dict(data=DataToExport).to_csv(outCSV,mode='a',index=False)
+            _rec_artifact(outCSV)
         if currentCombination !=self.Widget.SelCombinationDropDown.currentIndex():
             self.Widget.SelCombinationDropDown.setCurrentIndex(currentCombination) #this will refresh
         else:
@@ -1376,6 +1416,7 @@ class Babel_Thermal(QWidget):
         Tmap=np.flip(Tmap,axis=2)
         nii=nibabel.Nifti1Image(Tmap.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName)
+        _rec_artifact(OutName)
 
         pressureField = DataThermal['p_map'] * np.sqrt(IsppaRatio)
         
@@ -1393,15 +1434,18 @@ class Babel_Thermal(QWidget):
         OutName2=OutName.replace('ThermalField','PressureField')
         nii=nibabel.Nifti1Image(pressureField.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName2)
+        _rec_artifact(OutName2)
 
         OutName3=OutName.replace('ThermalField','IntensityField')
         nii=nibabel.Nifti1Image(intensityField.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName3)
+        _rec_artifact(OutName3)
 
         MIField = pressureField/1e6/np.sqrt(self._MainApp._Frequency/1e6)
         OutName4=OutName.replace('ThermalField','MI')
         nii=nibabel.Nifti1Image(MIField.astype(np.float32),affine=nidata.affine)
         nii.to_filename(OutName4)
+        _rec_artifact(OutName4)
             
         #If running with Brainsight, we save the path of thermal map
         if self._MainApp.Config['bInUseWithBrainsight']:

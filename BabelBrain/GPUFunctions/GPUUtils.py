@@ -102,7 +102,8 @@ def InitCUDA(preamble=None,kernel_files=None,DeviceName='A6000',build_later=Fals
     # Select device that matches specified name
     for deviceID in range(0, devCount):
         d=cp.cuda.runtime.getDeviceProperties(deviceID)
-        if DeviceName in d['name'].decode('UTF-8'):
+        devname=f'{deviceID}:'+d['name'].decode('UTF-8')
+        if DeviceName in devname:
             selDevice=cp.cuda.Device(deviceID)
             break
 
@@ -165,9 +166,10 @@ def InitOpenCL(preamble=None,kernel_files=None,DeviceName='A6000',build_later=Fa
     # Obtain list of available devices and select one 
     SelDevice=None
     for p in Platforms:
-        for device in p.get_devices():
-            print(device.name)
-            if DeviceName in device.name:
+        for n,device in enumerate(p.get_devices()):
+            devname = f'{n}:'+device.name
+            print(devname)
+            if DeviceName in devname:
                 SelDevice=device
     if SelDevice is None:
         raise SystemError("No OpenCL device containing name [%s]" %(DeviceName))
