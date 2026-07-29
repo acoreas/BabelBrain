@@ -158,7 +158,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         LocSpot=np.array(np.where(self._SkullMask.get_fdata(dtype=np.float32)==5.0)).flatten()
         
         for nt,st in enumerate(['VertDisplay','elemcenter']):
-            TxVert=self._SIM_SETTINGS._TxREMOPD[st].T.copy()
+            TxVert=self._SIM_SETTINGS._TxOrig[st].T.copy()
             TxVert/=self._SIM_SETTINGS.SpatialStep
             TxVert=np.vstack([TxVert,np.ones((1,TxVert.shape[1]))])
             TxVert[2,:]=-TxVert[2,:]
