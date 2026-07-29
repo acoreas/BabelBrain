@@ -9,6 +9,12 @@ from PySide6.QtCore import Slot, Qt,QAbstractTableModel
 #     pyside6-uic form.ui -o ui_form.py, or
 #     pyside2-uic form.ui -o ui_form.py
 from .ui_form import Ui_Dialog
+from .custom_transducer_dialog import (
+    CUSTOM_TRANSDUCER_OPTION,
+    CUSTOM_TRANSDUCER_PREFIX,
+    CustomTransducerDialog,
+    custom_transducer_display_name,
+)
 import platform
 import os
 from pathlib import Path
@@ -20,8 +26,9 @@ sys.path.append(os.path.abspath('../'))
                 
 sys.path.append(os.path.abspath('../../'))
 
-from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
+from CreateTransducers.transducer_creator import CustomTransducer, get_class_name, CUSTOM_TRANSDUCERS_FOLDER
 import RemoteServers
+from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
     
 
 _IS_MAC = platform.system() == 'Darwin'
@@ -40,6 +47,18 @@ def resource_path():  # needed for bundling
     return bundle_dir
 
 ListTxSteering=['H317','I12378','ATAC','R15148','R15646','IGT64_500','H301','DomeTx']
+
+def show_error_dialog(
+    parent: QWidget | None,
+    error: Exception | str,
+    title: str = "Error",
+) -> None:
+    message_box = QMessageBox(parent)
+    message_box.setIcon(QMessageBox.Icon.Critical)
+    message_box.setWindowTitle(title)
+    message_box.setText(f"Unable to create transducer\n\nReason:\n{str(error)}")
+    message_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    message_box.exec()
 
 class TableModel(QAbstractTableModel):
     def __init__(self, data):
@@ -149,6 +168,7 @@ class SelFiles(QDialog):
         super().__init__(parent)
         self.ui = Ui_Dialog()
         self.ui.setupUi(self)
+        self.AddCustomTransducersToList() # Add saved custom transducers
         # Apply the shared compact app style on top of the .ui layout.
         from GUIComponents.AppStyle import app_qss, apply_native_spinbox_style
         self.setStyleSheet(app_qss(self))
@@ -193,6 +213,8 @@ class SelFiles(QDialog):
         self.ui.CoregCTcomboBox.setCurrentIndex(CoregCT)
         self.ui.ResetCTMapOriginalpushButton.clicked.connect(self.ResetOriginalCTCombo)
 
+        self._previous_transducer_index = self.ui.TransducerTypecomboBox.currentIndex()
+        self.custom_transducer_config = ''
 
         self._GPUs=self.GetAvailableGPUs()
 
@@ -224,8 +246,56 @@ class SelFiles(QDialog):
         """
         Returns a list of all transducers available in BabelBrain
         """
-        return [self.ui.TransducerTypecomboBox.itemText(i) for i in range(self.ui.TransducerTypecomboBox.count())]
+        return [
+            self.ui.TransducerTypecomboBox.itemText(i).replace(CUSTOM_TRANSDUCER_PREFIX,"")
+            for i in range(self.ui.TransducerTypecomboBox.count())
+            if self.ui.TransducerTypecomboBox.itemText(i) != CUSTOM_TRANSDUCER_OPTION
+        ]
+    
+    def AddCustomTransducersToList(self):
+        """
+        Look for saved custom transducers in .config and add them to list of all transducers available in BabelBrain
+        """
+        
+        # When custom transducers are added to list, item indices change resulting in SelectTransducer being called again
+        # and opeing another create transducer dialog. We block signals from transducer combobox here to prevent this
+        self.ui.TransducerTypecomboBox.blockSignals(True) 
+        
+        # Define the transducers folder path if not already created
+        if not os.path.exists(CUSTOM_TRANSDUCERS_FOLDER):
+            # Create the directory safely
+            CUSTOM_TRANSDUCERS_FOLDER.mkdir(parents=True, exist_ok=True)
+            
+        try:    
+            valid_custom_txs = set()
+            
+            # Loop through each custom transducer and add to list
+            tx_folders = [f.name for f in Path(CUSTOM_TRANSDUCERS_FOLDER).iterdir() if f.is_dir()]
+            for tx_folder in tx_folders:
+                tx_folder_found = re.search("(?<=Babel_).*",str(tx_folder))
+                if tx_folder_found:
+                    tx_name = tx_folder_found[0]
+                    
+                    item_text = custom_transducer_display_name(tx_name)
+                    existing_index = self.ui.TransducerTypecomboBox.findText(item_text)
+                    valid_custom_txs.add(item_text)
+                    
+                    if existing_index < 0:
+                        insert_index = self.ui.TransducerTypecomboBox.count() - 1 # Accounting for 'Add Custom Transducer' option 
+                        self.ui.TransducerTypecomboBox.insertItem(insert_index, item_text)
+                        
+            # Delete custom transducers from list that no longer have files
+            for index in range(self.ui.TransducerTypecomboBox.count() - 1, -1, -1):
+                item_text = self.ui.TransducerTypecomboBox.itemText(index)
 
+                # Adjust this condition if custom entries use another identifier.
+                is_custom_transducer = item_text.startswith(CUSTOM_TRANSDUCER_PREFIX)
+
+                if is_custom_transducer and item_text not in valid_custom_txs:
+                    self.ui.TransducerTypecomboBox.removeItem(index)
+        finally:
+            self.ui.TransducerTypecomboBox.blockSignals(False)
+    
     # ── Computing-engine dropdown (local GPUs + remote servers) ──────────────
     def _engineKey(self, it):
         """A stable identity for a combo row, used to reselect after a repopulate."""
@@ -304,7 +374,9 @@ class SelFiles(QDialog):
                     self.ui.ComputingEnginecomboBox.setCurrentIndex(sel)
                     return
 
-    def SelectTxSystem(self,TxSystem='CTX_500'):
+    def SelectTxSystem(self,TxSystem='CTX_500',is_custom_tx=False):
+        if is_custom_tx:
+            TxSystem = CUSTOM_TRANSDUCER_PREFIX + TxSystem
         index = self.ui.TransducerTypecomboBox.findText(TxSystem)
         if index >=0:
             self.ui.TransducerTypecomboBox.setCurrentIndex(index)
@@ -545,12 +617,80 @@ class SelFiles(QDialog):
         self.ui.SelMultiPointProfilepushButton.setEnabled(bv)
 
     @Slot()
-    def SelectTransducer(self,value):
-        selTx=self.ui.TransducerTypecomboBox.currentText()
-        bv = selTx in ListTxSteering
-        if not bv:
+    def SelectTransducer(self, value):
+        sel_tx = self.ui.TransducerTypecomboBox.currentText()
+
+        # Open custom transducer dialog if option is selected
+        if sel_tx == CUSTOM_TRANSDUCER_OPTION:
+            dialog = CustomTransducerDialog(self,config_file=self.custom_transducer_config)
+            temp_tx = None
+            
+            while True:
+                result = dialog.exec()
+
+                # User cancelled or closed the dialog
+                if result != QDialog.DialogCode.Accepted:
+                    break
+
+                self.custom_transducer_config = dialog.config_file
+
+                try:
+                    gpu, computing_backend = self.GetSelectedComputingEngine()
+                    temp_tx = CustomTransducer(
+                        transducer_yaml=self.custom_transducer_config,
+                        computing_backend=computing_backend,
+                        gpu=gpu)
+
+                except Exception as error:
+                    if "Cancel Action" not in str(error):
+                        show_error_dialog(
+                            self,
+                            error,
+                            "Unable to create transducer",
+                        )
+                        
+                    # Reopen the same dialog as though Accept had not succeeded.
+                    continue
+                finally:
+                    # Refresh transducer list.
+                    self.AddCustomTransducersToList()
+
+                # Transducer was created successfully.
+                break
+            
+            # Change currently selected tx
+            if temp_tx:
+                new_tx_name = (CUSTOM_TRANSDUCER_PREFIX + get_class_name(temp_tx.name))
+                new_tx_index = (self.ui.TransducerTypecomboBox.findText(new_tx_name))
+
+                if new_tx_index >= 0:
+                    self.ui.TransducerTypecomboBox.setCurrentIndex(new_tx_index)
+                else:
+                    self.ui.TransducerTypecomboBox.setCurrentIndex(self._previous_transducer_index)
+            else:
+                if self.ui.TransducerTypecomboBox.itemText(self._previous_transducer_index) == CUSTOM_TRANSDUCER_OPTION:
+                    self.ui.TransducerTypecomboBox.setCurrentIndex(0)
+                else:
+                    self.ui.TransducerTypecomboBox.setCurrentIndex(self._previous_transducer_index)
+
+        current_tx = self.ui.TransducerTypecomboBox.currentText()
+
+        if current_tx.startswith(CUSTOM_TRANSDUCER_PREFIX):
+            tx_display_name = current_tx.removeprefix(CUSTOM_TRANSDUCER_PREFIX)
+            tx_default_yaml = (CUSTOM_TRANSDUCERS_FOLDER / f"Babel_{tx_display_name}" / "default.yaml")
+
+            with open(tx_default_yaml, "r") as file:
+                tx_params = yaml.load(file, Loader=yaml.UnsafeLoader,)
+
+            steering_enabled = (len(tx_params["steering_axes"]) == 3)
+        else:
+            steering_enabled = current_tx in ListTxSteering
+
+        if not steering_enabled:
             self.ui.MultiPointTypecomboBox.setCurrentIndex(0)
-        self.ui.MultiPointTypecomboBox.setEnabled(bv)
+        self.ui.MultiPointTypecomboBox.setEnabled(steering_enabled)
+        
+        self._previous_transducer_index = self.ui.TransducerTypecomboBox.currentIndex()
 
     @Slot()
     def ResetOriginalCTCombo(self):

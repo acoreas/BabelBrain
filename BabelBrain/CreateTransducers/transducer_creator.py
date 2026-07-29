@@ -1,9 +1,24 @@
+import importlib
 import logging
 import os
+from pathlib import Path
 import re
+import shutil
+import sys
+import tempfile
 
+from jinja2 import Environment, FileSystemLoader
+import matplotlib.pyplot as plt
+import nibabel as nib
 import numpy as np
+from PySide6.QtWidgets import QMessageBox, QDialog
+import pyvista as pv
 import yaml
+
+from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater, InitCuda,InitOpenCL, InitMetal
+from TranscranialModeling.tx_geometries import plot_elements
+from CreateTransducers.transducer_verification_dialog import TransducerVerificationDialog
+from Utils.paths import resource_path
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +27,9 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
+CUSTOM_TRANSDUCERS_FOLDER = Path.home() / '.config' / 'BabelBrain' / 'Transducers'
+DEFAULT_TXS = ['ATAC','CTX250','CTX250_2ch','CTX500','DomeTx','DPX500','DPXPC300','H246','H301','H317','I12378','IGT64_500','R15148',
+                  'R15287','R15473','R15646','REMOPD','BSonix','SingleTx']
 TX_GEOMETRIES = {
     "simple_focused": {
         "annular": False,
@@ -25,11 +43,11 @@ TX_GEOMETRIES = {
         "coordinate_system": "spherical",
         "flat": True,
         "spherical": False,
-        "steering_axes": None,
+        "steering_axes": {"z"},  # can only steer along depth axis
     },
     "focused_annular_array": {
         "annular": True,
-        "coordinate_system": ("cartesian", "spherical"),  # user-selectable
+        "coordinate_system": "spherical",
         "flat": False,
         "spherical": True,
         "steering_axes": {"z"},  # can only steer along depth axis
@@ -51,19 +69,55 @@ TX_GEOMETRIES = {
 }
 VALID_FREQUENCIES = range(200000,1005000,5000)
 
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def get_class_name(name):
+        
+        # Convert dashes between numbers to underscores.
+        name = re.sub(r"(?<=\d)-(?=\d)", "_", name)
+
+        # Split on underscores/dashes unless they are between two numbers.
+        parts = re.split(r"(?<!\d)[_-]+|[_-]+(?!\d)", name)
+    
+        pascalcase_name = "".join(part[:1].upper() + part[1:] for part in parts if part)
+        
+        return pascalcase_name
+
+# =============================================================================
+# Dialogs / Message Boxes / Widgets
+# =============================================================================
+
+def overwrite_msgbox(tx_name) -> None:
+    message_box = QMessageBox()
+    message_box.setIcon(QMessageBox.Icon.Warning)
+    message_box.setWindowTitle("Overwrite Existing Files")
+    message_box.setText(f"Transducer files already exist for {tx_name}.\n\nDo you want to overwrite them?")
+    message_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    message_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+    return message_box
+
+# =============================================================================
+# Main Class
+# =============================================================================
+
 class CustomTransducer:
 
-    def __init__(self, transducer_yaml: str) -> None:
+    def __init__(self, transducer_yaml: str = '', gpu: str = '', computing_backend: str ='') -> None:
         
         # Initial Values
         self.aperture_size: float | None = None
+        self.computing_backend = computing_backend
         self.coordinate_system: str | None = None
         self.coordinate_vars: list[str] = []
         self.distance_outplane: float | None = None
         self.elements: dict | None = None
+        self.element_size: float | None = None
         self.frequencies: list[int] = []
         self.focal_length: float | None = None
         self.geometry_type: str | None = None
+        self.gpu = gpu
         self.is_annular: bool = False
         self.is_spherical: bool = False
         self.is_steerable: bool = False
@@ -71,16 +125,34 @@ class CustomTransducer:
         self.num_elements: int | None = None
         self.PlanTUS: dict | None = None
         self.rings: dict | None = None
-        self.steering_axes: set | None = None
+        self.steering_axes: set = set()
         self.xsteering_limits: list | None = None
         self.ysteering_limits: list | None = None
         self.zsteering_limits: list | None = None
         
-        # Load/Validate transducer details
-        tx_params = self.load_custom_tx_config_file(transducer_yaml)
-        self._validate_custom_tx_params(tx_params)
-        
-        logger.info("Custom transducer file loading and validation complete")
+        try:
+            # Load/Validate transducer details
+            tx_params = self.load_custom_tx_config_file(transducer_yaml)
+            self._validate_custom_tx_params(tx_params)
+            print("Custom transducer file loading and validation complete")
+            
+            # Create transducer files needed for operation
+            self._create_tx_files()
+            
+            # Validate newly created transducer
+            self._validate_tx()
+            
+        except Exception as error:
+            
+            # Remove newly created tx files if exception occurs
+            if hasattr(self, "tx_folder"):
+                if self.tx_folder.exists() and self.tx_folder.is_dir():
+                    print("Deleting newly created transducer files")
+                    
+                    shutil.rmtree(self.tx_folder)
+                    print(f"Deleted: {self.tx_folder} and its contents")
+                
+            raise error
     
     # =========================================================================
     # FILE LOADING
@@ -88,7 +160,7 @@ class CustomTransducer:
     
     def load_custom_tx_config_file(self, tx_yaml: str) -> dict:
 
-        logger.info("Loading custom transducer file")
+        print("Loading custom transducer file")
         
         # Read yaml then save.return tx_params dict
         if not os.path.isfile(tx_yaml):
@@ -100,11 +172,11 @@ class CustomTransducer:
         return custom_tx_params
     
     # =========================================================================
-    # VALIDATION PIPELINE
+    # PARAMETER VALIDATION PIPELINE
     # =========================================================================
     
     def _validate_custom_tx_params(self, tx_params: dict) -> None:
-        logger.info("Validating custom transducer file")
+        print("Validating custom transducer file")
         
         # Validation order matters: geometry and num_elements must be set before
         # downstream validators (e.g. _validate_elements) that depend on them.
@@ -114,31 +186,23 @@ class CustomTransducer:
         self._validate_positive_param('aperture_size', (int, float), tx_params, unit="m")                       # sets: self.aperture_size
         self._validate_positive_param('focal_length',  (int, float), tx_params, unit="m")                       # sets: self.focal_length
         self._validate_positive_param('distance_outplane', (int, float), tx_params, allow_zero=True, unit="m")  # sets: self.distance_outplane
-        self._validate_positive_param('num_elements',  int, tx_params)                                          # sets: self.num_elements
+        if self.geometry_type != "simple_focused":
+            self._validate_positive_param('num_elements',  int, tx_params)                                      # sets: self.num_elements
+            if self.geometry_type in ['flat_array_2D','focused_array']:
+                self._validate_positive_param('element_size', (int, float), tx_params)                          # sets: self.element_size
+        else:
+            self.num_elements = 1
         self._validate_coordinate_system(tx_params)                                                             # sets: self.coordinate_system, self.coordinate_vars
         self._validate_elements(tx_params)                                                                      # sets: self.elements
         self._validate_annular(tx_params)                                                                       # sets: self.rings
         self._validate_steering(tx_params)                                                                      # sets: self.xsteering_limits, self.ysteering_limits, self.zsteering_limits
         self._validate_PlanTUS(tx_params)                                                                       # sets: self.PlanTUS
     
-    # =========================================================================
-    # PUBLIC / FUTURE API
-    # =========================================================================
-    
-    def create_tx_files(self) -> None:
-        raise NotImplementedError("create_tx_files not yet implemented")
-    
-    def validate_custom_tx(self) -> None:
-        raise NotImplementedError("validate_custom_tx not yet implemented")
-
-    def update_tx_list(self) -> None:
-        raise NotImplementedError("update_tx_list not yet implemented")
-    
-    # =========================================================================
+    # ---------------------------------------------------------------------
     # INTERNAL HELPERS (GENERIC)
-    # =========================================================================
+    # ---------------------------------------------------------------------
     
-    def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False) -> object:
+    def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False):
         """
         Helper function to ensure key exists in dict and the value is the correct type
         
@@ -206,7 +270,7 @@ class CustomTransducer:
         
         # Assign to self
         setattr(self,key,result) # Equivalent to self.<key> = result
-        logger.info(f"Transducer {key}: {result} {unit}")
+        print(f"Transducer {key}: {result} {unit}")
     
     def _validate_numeric_list_dict( self, param_dict: dict, num_elements: int | None = None, context_name: str = "parameter", allow_negative: bool = True) -> None:
         """
@@ -265,9 +329,9 @@ class CustomTransducer:
         if min_limit > max_limit:
             raise ValueError(f"{context_name}: Min value ({min_limit}) must be less than max value ({max_limit})")
     
-    # =========================================================================
+    # ---------------------------------------------------------------------
     # FIELD VALIDATORS
-    # =========================================================================
+    # ---------------------------------------------------------------------
     
     def _validate_name(self, tx_params: dict) -> None:
         """
@@ -296,7 +360,12 @@ class CustomTransducer:
             raise ValueError(f"Transducer name cannot contain special characters ({', '.join(special_chars)})")
         
         self.name = tx_name
-        logger.info(f"Transducer Name: {tx_name}")
+        self.class_name = get_class_name(self.name)
+        
+        if self.class_name in DEFAULT_TXS:
+            raise ValueError('You cannot overwrite default transducers, please enter a different name for your transducer')
+            
+        print(f"Transducer Name: {tx_name}\nTransducer Class Name: {self.class_name}")
     
     def _validate_geometry(self, tx_params: dict) -> None:
         """
@@ -320,10 +389,10 @@ class CustomTransducer:
         # Geometry type validation
         tx_geometry_type = self._get_param('geometry_type', str, tx_params)
         if tx_geometry_type not in TX_GEOMETRIES.keys():
-            valid_geoms_str = ", ".join(TX_GEOMETRIES.keys())
-            raise ValueError(f"{tx_geometry_type} is not a valid geometry choice\n Expecting one of the following: {valid_geoms_str}")
+            valid_geoms_str = "\n".join(TX_GEOMETRIES.keys())
+            raise ValueError(f"{tx_geometry_type} is not a valid geometry choice. Expecting one of the following:\n\n{valid_geoms_str}")
         self.geometry_type = tx_geometry_type
-        logger.info(f"Transducer Geometry: {tx_geometry_type}")
+        print(f"Transducer Geometry: {tx_geometry_type}")
         
         # Property assignments
         tx_steering_axes = TX_GEOMETRIES[tx_geometry_type]['steering_axes']
@@ -351,7 +420,7 @@ class CustomTransducer:
         """
         
         tx_frequencies = self._get_param('frequencies', list, tx_params)
-        logger.info("Transducer Frequencies:")
+        print("Transducer Frequencies:")
         for freq in tx_frequencies:
             
             # Ensure no decimal points in frequency
@@ -367,7 +436,7 @@ class CustomTransducer:
 
             # Add valid frequency to list
             self.frequencies.append(int_freq)
-            logger.info(f"   {int_freq} Hz")
+            print(f"   {int_freq} Hz")
         
         # Check for duplicate frequencies 
         if len(tx_frequencies) != len(set(tx_frequencies)):
@@ -387,12 +456,12 @@ class CustomTransducer:
             self.coordinate_system (str): Validated transducer element coordinate system
             self.coordinate_vars (list): List of dimension variable names (x,y,z for cartesian or r,theta,phi for spherical)
         """
-        # Non-spherical geometries have a fixed coordinate system — no user input needed
-        if not self.is_spherical:
+        # Geometries other than focused array have a fixed coordinate system — no user input needed
+        if self.geometry_type != "focused_array":
             self.coordinate_system = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
             self.coordinate_vars = COORD_VARS[self.coordinate_system]
-            logger.info(f"Transducer Coordinate System: {self.coordinate_system}")
-            logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
+            print(f"Transducer Coordinate System: {self.coordinate_system}")
+            print(f"Transducer Coordinate Variables: {self.coordinate_vars}")
             return
         
         # Spherical geometries allow user to choose coordinate system
@@ -401,14 +470,14 @@ class CustomTransducer:
         # Validate user specified coordinate system
         valid_tx_coordinate_systems = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
         if tx_coordinate_system not in valid_tx_coordinate_systems:
-            valid_coord_systems_str = ", ".join(valid_tx_coordinate_systems)
-            raise ValueError(f"{tx_coordinate_system} is not a valid coordinate system choice\n Expecting one of the following: {valid_coord_systems_str}")
+            valid_coord_systems_str = "\n".join(valid_tx_coordinate_systems)
+            raise ValueError(f"{tx_coordinate_system} is not a valid coordinate system choice. Expecting one of the following:\n\n{valid_coord_systems_str}")
         
         # Assign properties
         self.coordinate_system = tx_coordinate_system
         self.coordinate_vars = COORD_VARS[tx_coordinate_system]
-        logger.info(f"Transducer Coordinate System: {tx_coordinate_system}")
-        logger.info(f"Transducer Coordinate Variables: {self.coordinate_vars}")
+        print(f"Transducer Coordinate System: {tx_coordinate_system}")
+        print(f"Transducer Coordinate Variables: {self.coordinate_vars}")
          
     def _validate_elements(self, tx_params: dict) -> None:
         """
@@ -424,8 +493,8 @@ class CustomTransducer:
         Sets:
             self.elements (dict): Validated transducer elements.
         """
-        # Element coordinates do not need to be specified for non-spherical transducers
-        if not self.is_spherical:
+        # Element coordinates do not need to be specified for transducers not capabable of xy steering
+        if len(self.steering_axes) != 3:
             return
         
         tx_elements = self._get_param('elements', dict, tx_params)
@@ -476,8 +545,8 @@ class CustomTransducer:
         # Convert to mm for human-readable logging (yaml values are in metres)
         inner_diams_mm = [d * 1e3 for d in inner_diameters]
         outer_diams_mm = [d * 1e3 for d in outer_diameters]
-        logger.info(f"Transducer Inner Ring Diameters (mm): {inner_diams_mm}")
-        logger.info(f"Transducer Outer Ring Diameters (mm): {outer_diams_mm}")
+        print(f"Transducer Inner Ring Diameters (mm): {inner_diams_mm}")
+        print(f"Transducer Outer Ring Diameters (mm): {outer_diams_mm}")
 
     def _validate_steering(self, tx_params: dict) -> None:
         """
@@ -506,15 +575,15 @@ class CustomTransducer:
         if 'x' in self.steering_axes:
             tx_xsteering = self._get_param('x', list, tx_steering)
             self._validate_limits(tx_xsteering,"X Steering")
-            logger.info(f"Transducer X Steering Limits (m): {tx_xsteering}")
+            print(f"Transducer X Steering Limits (m): {tx_xsteering}")
         if 'y' in self.steering_axes:
             tx_ysteering = self._get_param('y', list, tx_steering)
             self._validate_limits(tx_ysteering,"Y Steering")
-            logger.info(f"Transducer Y Steering Limits (m): {tx_ysteering}")
+            print(f"Transducer Y Steering Limits (m): {tx_ysteering}")
         if 'z' in self.steering_axes:
             tx_zsteering = self._get_param('z', list, tx_steering)
             self._validate_limits(tx_zsteering,"Z Steering")
-            logger.info(f"Transducer Z Steering Limits (m): {tx_zsteering}")
+            print(f"Transducer Z Steering Limits (m): {tx_zsteering}")
         
         self._validate_numeric_list_dict(tx_steering,2,'steering')
         
@@ -549,7 +618,7 @@ class CustomTransducer:
         tx_planTUS_new = {}
         
         if tx_planTUS is not None:
-            logger.info("PlanTUS Parameters")
+            print("PlanTUS Parameters")
             # Work from a copy so we can remove matched frequencies and detect any omissions at the end
             tx_freqs = self.frequencies.copy()
 
@@ -560,7 +629,7 @@ class CustomTransducer:
                     raise ValueError(f"Frequencies under PlanTUS should be int or float, you put {planTUS_key} ({type(planTUS_key)})")
                 
                 planTUS_freq = int(planTUS_key)
-                logger.info(f"    {planTUS_freq} Hz")
+                print(f"    {planTUS_freq} Hz")
                 
                 # PlanTUS entries must correspond to a frequency already declared for this transducer
                 if planTUS_freq not in tx_freqs:
@@ -578,10 +647,10 @@ class CustomTransducer:
                     raise ValueError(f"Number of elements in FocalDistanceList ({len(tx_planTUS_focal_dists)}) does not match number in FHMLList ({len(tx_planTUS_focal_FHMLs)})")
                                 
                 # Rename keys
-                logger.info("        focal_distances (m):")
-                logger.info(f"           {tx_planTUS_focal_dists}")
-                logger.info("        FHMLs:")
-                logger.info(f"           {tx_planTUS_focal_FHMLs}")
+                print("        focal_distances (m):")
+                print(f"           {tx_planTUS_focal_dists}")
+                print("        FHMLs:")
+                print(f"           {tx_planTUS_focal_FHMLs}")
                 tx_planTUS_new[planTUS_freq] = {'focal_distances': tx_planTUS_focal_dists, 
                                                 'FHMLs': tx_planTUS_focal_FHMLs}
                 
@@ -594,3 +663,345 @@ class CustomTransducer:
                 raise ValueError(f"PlanTUS parameter is missing details for following frequencies: {missing_details}")
         
             self.PlanTUS = tx_planTUS_new
+    
+    # =============================================================================
+    # TX FILE CREATION
+    # =============================================================================
+       
+    def _create_tx_files(self) -> None:
+        print(f"Creating {self.name} transducer files")
+        
+        
+        # Environment for jinja files
+        env = Environment(loader=FileSystemLoader(resource_path(__file__) / ".." / "Babel_Tx_Templates"), trim_blocks=True, lstrip_blocks=True)
+        self.env = env
+        
+        self._set_tx_file_paths()
+        self._create_tx_folder()
+        self._create_tx_gui_file()
+        self._create_tx_main_file()
+        self._create_tx_integration_file()
+    
+    def _set_tx_file_paths(self):
+        tx_parent_folder = CUSTOM_TRANSDUCERS_FOLDER
+        tx_folder = tx_parent_folder / f"Babel_{self.class_name}"
+        tx_default_yaml = tx_folder / "default.yaml"
+        tx_main_file = tx_folder / f"Babel_{self.class_name}.py"
+        tx_form_file = tx_folder / f"{self.class_name}Form.py"
+        tx_integration_file = tx_folder / f"BabelIntegration{self.class_name}.py"
+        
+        # Overwrite existing files dialog
+        if os.path.exists(tx_folder):
+            msgbox = overwrite_msgbox(self.class_name)
+            
+            if msgbox.exec() == QMessageBox.Yes:
+                pass
+            else:
+                raise ValueError("Cancel Action: Transducer already exists")
+        
+        self.tx_parent_folder = tx_parent_folder
+        self.tx_folder = tx_folder
+        self.tx_default_yaml = tx_default_yaml
+        self.tx_main_file = tx_main_file
+        self.tx_form_file = tx_form_file
+        self.tx_integration_file = tx_integration_file
+    
+    def _create_tx_folder(self) -> None:
+        
+        # Define the transducers folder path if not already created
+        if not os.path.exists(self.tx_parent_folder):
+            # Create the directory safely
+            self.tx_parent_folder.mkdir(parents=True, exist_ok=True)
+            
+        # Add folder for current transducer
+        if not os.path.exists(self.tx_folder):
+            # Create the directory safely
+            self.tx_folder.mkdir(parents=True, exist_ok=True)
+        
+    def _create_tx_main_file(self):
+        tx_main_file_template = self.env.get_template("Babel_Tx.py.jinja")
+        
+        # Argument formating
+        transducer_template = self.geometry_type + "_tx"
+        transducer_template_class_name = get_class_name(transducer_template)
+        transducer_config = self._format_transducer_config()
+        
+        # Create Tx Form Text
+        tx_main_file_output = tx_main_file_template.render(
+            transducer_template = transducer_template,
+            transducer_template_class_name = transducer_template_class_name,
+            transducer_class_name = self.class_name,
+            # transducer_config = transducer_config,
+            default_yaml = self.tx_default_yaml
+        )
+        
+        # Create Tx Main File
+        with open(self.tx_main_file, "w") as f:
+            f.write(tx_main_file_output)
+            
+        # Create default.yaml File
+        with open(self.tx_default_yaml, "w") as f:
+            yaml.dump(transducer_config, f, default_flow_style=False, sort_keys=False)
+        
+    def _create_tx_gui_file(self):
+        tx_form_template = self.env.get_template("TxForm.py.jinja")
+
+        # Argument formating
+        if len(self.steering_axes) == 3:
+            xy_mech = "(-10.0, 10.0)"
+            multifocal = True
+            refocusing = True
+            
+        else:
+            xy_mech = "(-5.0, 5.0)"
+            multifocal = False
+            refocusing = False
+        
+        skin_distance = None
+        z_mechanic = None
+        device_skin_to_target_label = False
+        alternative_tissue_warning_value = None
+        if self.geometry_type == "flat_array_2D":
+            skin_distance = "(-90.0, 90.0)"
+            alternative_tissue_warning_value = r'"Tissue layers\nwill be removed!"'
+            device_skin_to_target_label = True
+        elif self.geometry_type == "flat_annular_array":
+            skin_distance = "(-35.0, 0.0)"
+            device_skin_to_target_label = True
+        elif self.geometry_type == "focused_annular_array":
+            skin_distance = "(-50.0, 50.0)"
+        elif self.geometry_type == "simple_focused":
+            skin_distance = "(-25.0, 5.0)"
+        else:
+            z_mechanic = "(-90.0, 90.0)"
+            alternative_tissue_warning_value = "None"
+            
+        if "z" in self.steering_axes:
+            if self.geometry_type in ["flat_array_2D","focused_array"]:
+                steering_z_name = "ZSteering"
+            else:
+                steering_z_name = "TPODistance"
+        else:
+            steering_z_name = None
+        
+        # Create Tx Form Text
+        tx_form_output = tx_form_template.render(
+            tx_name = self.class_name,
+            # tx_form_description = "Both forms share the same layout scaffold (TxPanelBase) and differ only in their left-panel controls (focal length / diameter vs. transducer-model dropdown).",
+            focal_length_adjustable = self.geometry_type == "simple_focused",
+            diameter_adjustable = self.geometry_type == "simple_focused",
+            multifocal = multifocal,
+            refocusing = refocusing,
+            distance_outplane_to_focus = self.geometry_type == "simple_focused",
+            distance_cone_to_focus = self.geometry_type == "focused_array",
+            steering_x = "x" in self.steering_axes,
+            steering_y = "y" in self.steering_axes,
+            steering_z = "z" in self.steering_axes,
+            steering_z_name = steering_z_name,
+            device_skin_to_target_label = device_skin_to_target_label,
+            xy_mech = xy_mech,
+            skin_distance = skin_distance,
+            z_mechanic = z_mechanic,
+            alternative_tissue_warning_value = alternative_tissue_warning_value
+        )
+        
+        # Create Tx Form File
+        with open(self.tx_form_file, "w") as f:
+            f.write(tx_form_output)
+    
+    def _create_tx_integration_file(self):
+        tx_integration_file_template = self.env.get_template("BabelIntegrationTx.py.jinja")
+        
+        # Argument formating
+        transducer_integration_template = "babel_integration_" + self.geometry_type
+        
+        # Create Tx Form Text
+        tx_integration_output = tx_integration_file_template.render(
+            transducer_integration_template = transducer_integration_template,
+        )
+        
+        # Create Tx Main File
+        with open(self.tx_integration_file, "w") as f:
+            f.write(tx_integration_output)
+    
+    def _format_transducer_config(self):
+        transducer_config = vars(self).copy()
+        del transducer_config['env']
+        
+        # Important folder paths
+        transducer_config["tx_parent_folder"] = str(self.tx_parent_folder.resolve())
+        transducer_config["tx_folder"] = str(self.tx_folder.resolve())
+        transducer_config["tx_default_yaml"] = str(self.tx_default_yaml.resolve())
+        transducer_config["tx_main_file"] = str(self.tx_main_file.resolve())
+        transducer_config["tx_form_file"] = str(self.tx_form_file.resolve())
+        transducer_config["tx_integration_file"] = str(self.tx_integration_file.resolve())
+        
+        # Variable renaming
+        transducer_config['USFrequencies'] = transducer_config.pop('frequencies')
+        transducer_config['NaturalOutPlaneDistance'] = transducer_config.pop('distance_outplane')
+        transducer_config['TxDiam'] = transducer_config.pop('aperture_size')
+        if self.geometry_type in ["focused_annular_array","flat_annular_array","focused_array"]:
+            transducer_config['FocalLength'] = transducer_config.pop('focal_length')
+            
+            if self.is_annular:
+                transducer_config['InDiameters'] = transducer_config['rings']['inner_diameters']
+                transducer_config['OutDiameters'] = transducer_config['rings']['outer_diameters']
+                transducer_config.pop('rings')
+        
+        if "x" in self.steering_axes:
+            transducer_config['MinimalXSteering'] = transducer_config['xsteering_limits'][0]
+            transducer_config['MaximalXSteering'] = transducer_config['xsteering_limits'][-1]
+            
+        if "y" in self.steering_axes:
+            transducer_config['MinimalYSteering'] = transducer_config['ysteering_limits'][0]
+            transducer_config['MaximalYSteering'] = transducer_config['ysteering_limits'][-1]
+            
+        if "z" in self.steering_axes:
+            transducer_config['MinimalZSteering'] = transducer_config['zsteering_limits'][0]
+            transducer_config['MaximalZSteering'] = transducer_config['zsteering_limits'][-1]
+            transducer_config['DefaultZSteering'] = float(np.sum(transducer_config['zsteering_limits'])/len(transducer_config['zsteering_limits']))
+        
+        # Added Default variable values
+        if self.geometry_type == 'simple_focused':
+            transducer_config['MaxDistanceToSkin'] = 50 # mm
+            transducer_config['MaxNegativeDistance'] = 10   # mm
+        elif self.geometry_type in ['focused_annular_array','flat_annular_array']:
+            transducer_config['MaxDistanceToSkin'] = 50 # mm
+            transducer_config['MaxNegativeDistance'] = 10   # mm
+            transducer_config['MinimalTPODistance'] = 8.0e-3   # m
+            transducer_config['MaximalTPODistance'] = 120.0e-3  # m
+        elif self.geometry_type in ['flat_array_2D']:
+            transducer_config['MaxDistanceToSkin'] = 50 # mm
+            transducer_config['MaxNegativeDistance'] = 10   # mm
+        elif self.geometry_type in ['focused_array']:
+            transducer_config['MinimalDistanceConeToFocus'] = 10.0e-3 # m
+            transducer_config['MaximalDistanceConeToFocus'] = 129.0e-3 # m
+            transducer_config['DefaultDistanceConeToFocus'] = (transducer_config['MinimalDistanceConeToFocus'] + transducer_config['MaximalDistanceConeToFocus']) / 2
+            
+        return transducer_config
+    
+    # =============================================================================
+    # TRANSDUCER VALIDATION
+    # =============================================================================
+    
+    def _validate_tx(self):
+        
+        # Acoustics Water Sim
+        tx_data, acoustics_water_plot, grid_info = self._run_rayleigh()
+        acoustics_water_plot = np.abs(acoustics_water_plot)
+    
+        user_verification_dialog = TransducerVerificationDialog(
+            tx_data=tx_data,
+            acoustic_data=acoustics_water_plot,
+            grid_info=grid_info,
+            parent=None,
+        )
+
+        if user_verification_dialog.exec() == QDialog.DialogCode.Accepted:
+            print("User approved the generated transducer.")
+        else:
+            raise ValueError("Cancel Action: User did not approve transducer design")
+        
+    
+    def _run_rayleigh(self):
+        sys.path.insert(0, str(CUSTOM_TRANSDUCERS_FOLDER))
+
+        TxIntegration = importlib.import_module(f"Babel_{self.class_name}.BabelIntegration{self.class_name}")
+        
+        args = {}
+        args['Aperture'] = self.aperture_size
+        args['Frequency'] = self.frequencies[0]
+        args['FocalLength'] = self.focal_length
+        if 'x' in self.steering_axes:   
+            args['XSteering'] = 0.0
+        if 'y' in self.steering_axes:   
+            args['YSteering'] = 0.0
+        if 'z' in self.steering_axes:   
+            args['ZSteering'] = 0.0
+        if len(self.steering_axes) == 3:
+            args['RotationZ'] = 0.0
+        if self.geometry_type in ['focused_array']:
+            args['DistanceConeToFocus'] = self.focal_length - self.distance_outplane
+        if self.geometry_type in ['focused_array','flat_array_2D']:
+            args['elements'] = self.elements
+            args['num_elements'] = self.num_elements
+            args['element_size'] = self.element_size
+        if self.is_annular:
+            args['InDiameters'] = np.array(self.rings['inner_diameters'])
+            args['OutDiameters'] = np.array(self.rings['outer_diameters'])
+            
+        sim_conditions = TxIntegration.SimulationConditions(**args)
+        
+        if self.geometry_type in ['focused_array']:
+            sim_conditions.GenTransducerGeom()
+        elif self.geometry_type in ['flat_array_2D']:
+            sim_conditions._Tx = sim_conditions.GenTransducerGeom()
+        else:
+            sim_conditions._Tx = sim_conditions.GenTx()
+
+        Material = {}
+        Material['Water']=     np.array([1000.0, SpeedofSoundWater(20.0), 0.0   ,   0.0,                   0.0] )
+        cwvnb_extlay=np.array(2*np.pi*sim_conditions._Frequency/(Material['Water'][1])+1j*0).astype(np.complex64)
+        
+        #Limits of domain, in m
+        radius = self.aperture_size/2*1.5
+        depth = self.focal_length*2
+        xfmin=-radius
+        xfmax=radius
+        yfmin=-radius
+        yfmax=radius
+        zfmin=0
+        zfmax=max(depth,xfmax-xfmin)
+        
+        spatial_step = SpeedofSoundWater(20.0) / self.frequencies[0] / 6
+
+        xfield = np.linspace(xfmin,xfmax,int(np.ceil((xfmax-xfmin)/spatial_step)+1))
+        yfield = np.linspace(yfmin,yfmax,int(np.ceil((yfmax-yfmin)/spatial_step)+1))
+        zfield = np.linspace(zfmin,zfmax,int(np.ceil((zfmax-zfmin)/spatial_step)+1))
+        nxf=len(xfield)
+        nyf=len(yfield)
+        nzf=len(zfield)
+        xp,yp,zp=np.meshgrid(xfield,yfield,zfield)
+
+        Amp = 60e3/Material['Water'][0]/SpeedofSoundWater(20.0) #60 kPa
+
+        sim_conditions._SourceAmpPa = Amp
+        u0=(np.ones((sim_conditions._Tx['center'].shape[0],1),np.float32)+ 1j*np.zeros((sim_conditions._Tx['center'].shape[0],1),np.float32))*sim_conditions._SourceAmpPa
+        
+        rf=np.hstack(
+            (
+                np.reshape(xp,(nxf*nyf*nzf,1)),
+                np.reshape(yp,(nxf*nyf*nzf,1)),
+                np.reshape(zp,(nxf*nyf*nzf,1))
+            )
+        ).astype(np.float32)
+        
+        
+        self.initialize_gpu()    
+        u2=ForwardSimple(cwvnb_extlay,
+                         sim_conditions._Tx['center'].astype(np.float32),
+                         sim_conditions._Tx['ds'].astype(np.float32),
+                         u0,
+                         rf,
+                         deviceMetal="M1")
+        u2 *= Material['Water'][0]*Material['Water'][1]
+        u2=np.reshape(u2,xp.shape)
+        
+        grid_info = {}
+        grid_info['xfmin'] = xfmin
+        grid_info['xfmax'] = xfmax
+        grid_info['yfmin'] = yfmin
+        grid_info['yfmax'] = yfmax
+        grid_info['zfmin'] = zfmin
+        grid_info['zfmax'] = zfmax
+        grid_info['spatial_step'] = spatial_step
+        
+        return sim_conditions._Tx, u2.T, grid_info
+    
+    def initialize_gpu(self):
+        if self.computing_backend=='CUDA':
+            InitCuda(self.gpu)
+        elif self.computing_backend=='OpenCL':
+            InitOpenCL(self.gpu)
+        elif self.computing_backend=='Metal':
+            InitMetal(self.gpu)

@@ -596,6 +596,11 @@ PETRA, Density?</string>
       <string>DomeTx</string>
      </property>
     </item>
+    <item>
+     <property name="text">
+      <string>Add Custom Transducer ...</string>
+     </property>
+    </item>
    </widget>
    <widget class="QLabel" name="label_2">
     <property name="geometry">
