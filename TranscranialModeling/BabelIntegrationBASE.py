@@ -7,14 +7,31 @@ ABOUT:
      last update   - Nov 28, 2021
 
 '''
-import numpy as np
-np.seterr(divide='raise')
-import platform
+import gc
+import os
 from pathlib import Path
+import platform
 import sys
+import time
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+import h5py
+from linetimer import CodeTimer
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from BabelViscoFDTD.H5pySimple import ReadFromH5py,SaveToH5py
+try:
+    import mkl_fft as fft
+except:
+    from numpy import fft
+import nibabel
+import numpy as np
+np.seterr(divide='raise')
+import pandas as pd
+import pwlf
+import scipy
+from scipy import interpolate
+import SimpleITK as sitk
 
 # Artifact recording (see BabelBrain/ArtifactIO.py). Guarded so this module still
 # imports if ArtifactIO isn't on the path; a no-op unless BABEL_ARTIFACT_LOG is set.
@@ -23,31 +40,10 @@ try:
 except Exception:
     def _rec_artifact(_p, **_k):
         return _p
-
+from BabelViscoFDTD.H5pySimple import ReadFromH5py,SaveToH5py
 from BabelViscoFDTD.PropagationModel import PropagationModel
 from BabelViscoFDTD.tools.RayleighAndBHTE import InitCuda,InitOpenCL, InitMetal
-import nibabel
-import SimpleITK as sitk
-from scipy import interpolate
-import scipy
-import warnings
-import time
-import gc
-import os
-import os
-import pandas as pd
-import h5py
-from linetimer import CodeTimer
-import pwlf
 
-try:
-    import mkl_fft as fft
-except:
-    from numpy import fft
-    
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-import os
 
 PModel=PropagationModel()
 _IS_MAC = platform.system() == 'Darwin'
@@ -1415,7 +1411,8 @@ class BabelFTD_Simulations_BASE(object):
                  InputFocusStart='',
                  OptimizedWeightsFile='',
                  AIRMASK=None,
-                 TxSystem=''):
+                 TxSystem='',
+                 **kargs):
         self._MASKFNAME=MASKFNAME
 
         if 'BABEL_PYTEST_QFACTOR' in os.environ:
