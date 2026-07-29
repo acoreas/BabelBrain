@@ -68,11 +68,12 @@ from ConvMatTransform import (
     read_itk_affine_transform,
 )
 from SelFiles.SelFiles import SelFiles,ValidThermalProfile
+from SelFiles.custom_transducer_dialog import CUSTOM_TRANSDUCER_PREFIX
 
 from Options.Options import AdvancedOptions, OptionalParams, ApplyAdvancedConfig
 from ClockDialog import ClockDialog
 from GUIComponents.nifti_viewer import NiftiViewerWindow
-
+from Utils.paths import resource_path
 from Telemetry.Telemetry import send_telemetry
 from datetime import datetime, timezone
 
@@ -97,17 +98,6 @@ bINUSE_INSIDE_BRAINSIGHT = False
 
 _IS_MAC = platform.system() == 'Darwin'
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS)
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 def get_text_values(initial_texts, parent=None, title="", label=""):
     '''
@@ -416,6 +406,7 @@ class BabelBrain(QWidget):
         CTMapCombo = widget._dfCTParams.iloc[widget.ui.CTMappingcomboBox.currentIndex()].name
         Mat4Trajectory=widget.ui.TrajectorylineEdit.text()
         ThermalProfile=widget.ui.ThermalProfilelineEdit.text()
+        custom_tx_yaml= widget.custom_transducer_config
         if widget.ui.SimbNIBSTypecomboBox.currentIndex()==0:
             SimbNIBSType ='charm'
         else:
@@ -450,7 +441,13 @@ class BabelBrain(QWidget):
         # Remote-server details when ComputingBackend==5 (else None); consumed by
         # the client/server offload path (RunServerCalculation).
         self.Config['RemoteServer']=widget.GetSelectedServer() if ComputingBackend==5 else None
-        self.Config['TxSystem']=widget.ui.TransducerTypecomboBox.currentText()
+        
+        transducer_type = widget.ui.TransducerTypecomboBox.currentText()
+        self.Config['is_custom_tx'] = CUSTOM_TRANSDUCER_PREFIX in transducer_type
+        if self.Config['is_custom_tx']:
+            self.Config['TxSystem']=transducer_type.replace(CUSTOM_TRANSDUCER_PREFIX,"")
+        else:
+            self.Config['TxSystem']=transducer_type
 
         self.Config['simbnibs_path']=simbnibs_path
         self.Config['SimbNIBSType']=SimbNIBSType
@@ -458,6 +455,7 @@ class BabelBrain(QWidget):
         self.Config['Mat4Trajectory']=Mat4Trajectory
         self.Config['OrigMat4Trajectory']=Mat4Trajectory
         self.Config['ThermalProfile']=ThermalProfile
+        self.Config['custom_tx_yaml']=custom_tx_yaml
         self.Config['T1W']=T1W
         self.Config['bUseCT']=bUseCT
         self.Config['CTType']=CTType
@@ -498,7 +496,7 @@ class BabelBrain(QWidget):
 
         
         self.Config['T1WIso'] = self.Config['OutputFilesPath'] + os.sep + re.sub(r'\.nii(\.gz)?$', '', os.path.split(self.Config['T1W'])[1]) + '-isotropic.nii.gz'
-        with open(os.path.join(resource_path(),'version-gui.txt'), 'r') as f:
+        with open(os.path.join(resource_path(__file__),'version-gui.txt'), 'r') as f:
             self.Config['version'] =f.readlines()[0]
 
         self.Config['MultiPoint']=''
@@ -698,7 +696,13 @@ class BabelBrain(QWidget):
             idimport = self.Config['TxSystem']
             ibsub=idimport
         try:
-            WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
+            if self.Config['is_custom_tx']:
+                module_directory = Path.home() / '.config' / 'BabelBrain' / 'Transducers'
+                sys.path.insert(0, str(module_directory))
+
+                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
+            else:
+                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
         except ImportError:
             EndWithError("TX system " + self.Config['TxSystem'] + " is not yet supported")
 
@@ -2121,6 +2125,7 @@ def main():
         selwidget.ui.T1WlineEdit.setText(prevConfig['T1W'])
         selwidget.ui.TrajectorylineEdit.setText(prevConfig['Mat4Trajectory'])
         selwidget.ui.ThermalProfilelineEdit.setText(prevConfig['ThermalProfile'])
+        selwidget.custom_transducer_config = prevConfig['custom_tx_yaml']
         if 'CT_or_ZTE_input' in prevConfig:
             selwidget.ui.CTlineEdit.setText(prevConfig['CT_or_ZTE_input'])
             selwidget.ui.CTTypecomboBox.setCurrentIndex(prevConfig['CTType'])
@@ -2163,7 +2168,7 @@ def main():
                     selwidget.SelectComputingEngine(GPU=GPU,Backend=Backend)
 
         if 'TxSystem' in prevConfig:
-            selwidget.SelectTxSystem(prevConfig['TxSystem'])
+            selwidget.SelectTxSystem(prevConfig['TxSystem'],prevConfig['is_custom_tx'])
         if 'MultiPoint' in prevConfig:
             if prevConfig['EnableMultiPoint']:
                 selwidget.ui.MultiPointTypecomboBox.setCurrentIndex(1)
@@ -2181,7 +2186,7 @@ def main():
         selwidget.ui.TrajectoryTypecomboBox.setCurrentIndex(0)
         AltOutputFilesPath=Brainsight['outputfiles_path']
 
-    icon = QIcon(os.path.join(resource_path(),'Proteus-Alciato-logo.png'))
+    icon = QIcon(os.path.join(resource_path(__file__),'Proteus-Alciato-logo.png'))
     app.setWindowIcon(icon)
 
 
