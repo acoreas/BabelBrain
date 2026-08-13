@@ -9,41 +9,43 @@ ABOUT:
 '''
 import gc
 import os
-from pathlib import Path
 import platform
+import subprocess
 import sys
 import time
 import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+from pathlib import Path
 
 import h5py
-from linetimer import CodeTimer
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-try:
-    import mkl_fft as fft
-except:
-    from numpy import fft
 import nibabel
 import numpy as np
-np.seterr(divide='raise')
 import pandas as pd
 import pwlf
 import scipy
-from scipy import interpolate
 import SimpleITK as sitk
+from BabelViscoFDTD.H5pySimple import ReadFromH5py, SaveToH5py
+from BabelViscoFDTD.PropagationModel import PropagationModel
+from BabelViscoFDTD.tools.RayleighAndBHTE import InitCuda, InitMetal, InitOpenCL
+from linetimer import CodeTimer
+from matplotlib import ticker
+from scipy import interpolate
 
+try:
+    import mkl_fft as fft
+except ImportError:
+    from numpy import fft
+    
 # Artifact recording (see BabelBrain/ArtifactIO.py). Guarded so this module still
 # imports if ArtifactIO isn't on the path; a no-op unless BABEL_ARTIFACT_LOG is set.
 try:
     from ArtifactIO import record as _rec_artifact
-except Exception:
+except ImportError:
     def _rec_artifact(_p, **_k):
         return _p
-from BabelViscoFDTD.H5pySimple import ReadFromH5py,SaveToH5py
-from BabelViscoFDTD.PropagationModel import PropagationModel
-from BabelViscoFDTD.tools.RayleighAndBHTE import InitCuda,InitOpenCL, InitMetal
 
+np.seterr(divide='raise')
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 PModel=PropagationModel()
 _IS_MAC = platform.system() == 'Darwin'
@@ -774,9 +776,11 @@ def SaveNiftiEnforcedISO(nii_in, fn):
             os.remove(fn_unc)
         except: #last resource is to use flirt
             res = '%6.5f' % (res)
-            cmd='flirt -in "'+fn_unc + '" -ref "'+ fn_unc + '" -applyisoxfm ' +res + ' -nosearch -out "' + newfn +'"'
-            print(cmd)
-            assert(os.system(cmd)==0)
+            rcmd=['flirt','-in',fn_unc,'-ref',fn_unc,'-applyisoxfm',res,'-nosearch','-out','newfn']
+            result = subprocess.run(rcmd, capture_output=True, text=True)
+            print("stdout:", result.stdout)
+            print("stderr:", result.stderr)
+            assert(result.returncode==0)
             os.remove(fn_unc)
 
     _rec_artifact(newfn)

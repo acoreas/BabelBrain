@@ -233,18 +233,22 @@ def ConvertMNItoSubjectSpace(M1_C,DataPath,T1Conformal_nii,bUseFlirt=True,PathSi
         M1_MNI = '%f %f %f' % (M1_C[0],M1_C[1],M1_C[2])
         with open(DataPath+'mni.csv','w') as f:
             f.write(M1_MNI)
-        cmd='$FSLDIR/bin/flirt -in "' + T1Conformal_nii + '" -ref $FSLDIR/data/standard/MNI152_T1_1mm -omat "'+\
-            DataPath+'anat2mni.xfm" -out "' + DataPath+ 'anat_norm"'
-        print(cmd)
-        res=os.system(cmd)
-        if res !=0:
+        rcmd=['$FSLDIR/bin/flirt','-in','T1Conformal_nii', '-ref', '$FSLDIR/data/standard/MNI152_T1_1mm', '-omat',
+              DataPath+'anat2mni.xfm','-out','DataPath','anat_norm']
+        print(rcmd)
+        result = subprocess.run(rcmd,capture_output=True, text=True)
+        print("stdout:", result.stdout)
+        print("stderr:", result.stderr)
+        if result.returncode !=0:
             raise SystemError("Something didn't work when trying to run flirt")
 
-        cmd ="$FSLDIR/bin/std2imgcoord -img '" + T1Conformal_nii +"' -std $FSLDIR/data/standard/MNI152_T1_1mm.nii -xfm '"+\
-            DataPath+"anat2mni.xfm' '"+ DataPath+"mni.csv' > '" + DataPath+"natspace.tsv'"
-        print(cmd)
-        res=os.system(cmd)
-        if res !=0:
+        rcmd =['$FSLDIR/bin/std2imgcoord', '-img',T1Conformal_nii,'-std','$FSLDIR/data/standard/MNI152_T1_1mm.nii',
+               '-xfm',DataPath+'anat2mni.xfm', DataPath+'mni.csv']
+
+        with open(DataPath+"natspace.tsv", 'w') as f:
+            result=subprocess.run(rcmd, stdout=f,text=True)
+
+        if result.returncode !=0:
             raise ValueError("Something didn't work when trying to convert from MNI to subject, check all paths are correct")
 
         with open(DataPath+'natspace.tsv','r') as f:
@@ -255,15 +259,16 @@ def ConvertMNItoSubjectSpace(M1_C,DataPath,T1Conformal_nii,bUseFlirt=True,PathSi
         M1_MNI = 'Generic,%f,%f,%f,M1'
         with open(DataPath+'mni.csv','w') as f:
             f.write(M1_MNI)
-        cmd = PathSimnNIBS+"mni2subject_coords -m '"+DataPath+"m2m_SimbNIBS_LIFU_02/' -s '"+DataPath+"mni.csv'" +\
-          " -o '" +DataPath+"subject.csv'"
-        print(cmd)
-        res=os.system(cmd)
-        if res !=0:
+        rcmd = [PathSimnNIBS+"mni2subject_coords",'-m',DataPath+'m2m_SimbNIBS_LIFU_02/', '-s',
+                DataPath+'mni.csv','-o',DataPath+'subject.csv']
+
+        print(rcmd)
+        result=subprocess.run(rcmd,capture_output=True, text=True)
+        if result.returncode !=0:
             raise ValueError("Something didn't work when trying to convert from MNI to subject, check all paths are correct")
         with open(DataPath+'subject.csv','r') as f:
             subjectcoordinates=f.readlines()
-        subjectcoordinates=np.asarray(subjectcoordinates[0].split(',')[1:4]).astype(np.float)
+        subjectcoordinates=np.asarray(subjectcoordinates[0].split(',')[1:4]).astype(float)
     print('MNI coordinates',M1_C)
     print('patient coordinates',subjectcoordinates)
     return subjectcoordinates
@@ -322,23 +327,18 @@ def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
             path_script = os.path.join(resource_path(),"ExternalBin/SimbNIBSMesh/run_mac.sh")
         
         print("Starting MeshConv")
-        if _IS_MAC:
-            cmd ='source "'+path_script + '" "' + SimbNINBSRoot + '" "' + scriptbase + '" "' + reference + '" "' + mesh +'" "' + finalname + '"'
-            print(cmd)
-            result = os.system(cmd)
-        else:
-            result = subprocess.run(
-                    [shell,
-                    path_script,
-                    SimbNINBSRoot,
-                    scriptbase,
-                    reference,
-                    mesh,
-                    finalname], capture_output=True, text=True
-            )
-            print("stdout:", result.stdout)
-            print("stderr:", result.stderr)
-            result=result.returncode 
+        result = subprocess.run(
+                [shell,
+                path_script,
+                SimbNINBSRoot,
+                scriptbase,
+                reference,
+                mesh,
+                finalname], capture_output=True, text=True
+        )
+        print("stdout:", result.stdout)
+        print("stderr:", result.stderr)
+        result=result.returncode 
     else:
         path_script = os.path.join(resource_path(),"ExternalBin","SimbNIBSMesh","run_win.bat")
         print('path_script for MeshConv',path_script)
@@ -526,6 +526,8 @@ def GetSkullMaskFromSimbNIBSSTL(SimbNIBSDir='4007/4007_keep/m2m_4007_keep/',
             RMat=RMat[:,:,TrajectoryNumber]
     else:
         inMat=read_itk_affine_transform(Mat4Trajectory)
+        if len(inMat.shape)==3: #multi trajectory
+            inMat=inMat[:,:,TrajectoryNumber]
          #we add this as in Brainsight the needle for trajectory starts at with a vector pointing 
          #to the feet direction , while in SlicerIGT it starts with a vector towards the head
         print('*'*40+'\n Reading orientation and target location directly from Slicer export\n'+'*'*40)

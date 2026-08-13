@@ -1,6 +1,6 @@
 import sys
 
-from PySide6.QtWidgets import QDialog,QFileDialog,QStyle,QMessageBox,QVBoxLayout
+from PySide6.QtWidgets import QDialog,QFileDialog,QStyle,QMessageBox,QVBoxLayout,QDialogButtonBox
 from PySide6.QtCore import QTimer,QObject
 
 import platform
@@ -208,6 +208,14 @@ class RUN_PLAN_TUS(QObject):
         Mat4Trajectory=self.MainApp.Config['OrigMat4Trajectory']
 
         PlanTUSRoot=self.OptionsDlg.ui.PlanTUSRootlineEdit.text()
+        # Fall back to the PlanTUS bundled with BabelBrain (pinned version at
+        # ExternalBin/PlanTUS/PlanTUS) when the user has not set a valid folder.
+        if PlanTUSRoot in ('...','') or not os.path.isfile(os.path.join(PlanTUSRoot,'PlanTUS_wrapper.py')):
+            _bundled=os.path.normpath(os.path.join(resource_path(),'ExternalBin','PlanTUS','PlanTUS'))
+            if os.path.isfile(os.path.join(_bundled,'PlanTUS_wrapper.py')):
+                PlanTUSRoot=_bundled
+            else:
+                raise RuntimeError(f"PlanTUS_wrapper.py does not exist where is expected: {_bundled}")
         SimbNINBSRoot=self.OptionsDlg.ui.SimbNINBSRootlineEdit.text()
         ConnectomeRoot=self.OptionsDlg.ui.ConnectomeRootlineEdit.text()
         VolumeROIPlanTUS=self.OptionsDlg.ui.VolumeROIPlanTUSlineEdit.text()
@@ -218,6 +226,8 @@ class RUN_PLAN_TUS(QObject):
                 RMat=RMat[:,:,self.IDIndex]
         else:
             inMat=read_itk_affine_transform(Mat4Trajectory)
+            if len(inMat.shape)==3:
+                inMat=inMat[:,:,self.IDIndex]
             RMat = itk_to_BSight(inMat)
 
         #we will reuse to recover the center of the trajectory
@@ -313,7 +323,7 @@ class RUN_PLAN_TUS(QObject):
         plan_tus_config.ExportYAML(TxConfigName)
         
         mshPath=glob.glob(self.MainApp.Config['simbnibs_path'] + os.sep + "*.msh")[0]
-        maskPath=Mat4Trajectory.replace('.txt',f'_PlanTUSMask_T{self.IDIndex}.nii.gz')
+        maskPath=os.path.splitext(Mat4Trajectory)[0]+f'_PlanTUSMask_T{self.IDIndex}.nii.gz'
         self.PlanOutputPath=os.path.split(mshPath)[0]+os.sep+'PlanTUS'+os.sep+Path(maskPath).name.replace('.nii.gz','')
         print('self.PlanOutputPath', self.PlanOutputPath)
 
@@ -472,10 +482,7 @@ class RUN_PLAN_TUS(QObject):
 
                     bdir,sfile = os.path.split(trajFile)
                     tfile = sfile.replace('trajectory','transducer').replace('_BabelBrain.txt','.surf.gii')
-                    self.showFinalResults(bdir+os.sep+tfile)
-
-                    ret = QMessageBox.question(self.OptionsDlg,'', "Do you want to use the\n PlanTUS results to update the trajectory? ",QMessageBox.Yes | QMessageBox.No)
-                    if ret == QMessageBox.Yes:
+                    if self.showFinalResults(bdir+os.sep+tfile):
                         TrajectoryType=self.MainApp.Config['TrajectoryType']
                         if TrajectoryType =='brainsight':
                             ext='*BSight.txt'
@@ -483,23 +490,30 @@ class RUN_PLAN_TUS(QObject):
                             ext='*Slicer.txt'
                             lastfoutname=foutnameSlicer
 
-                        finalfname=self.MainApp.Config['OrigMat4Trajectory'].split('.txt')[0]+'_PlanTUS.txt'
-                                
-                        if len(trajFiles)>1:
-                            fname = QFileDialog.getOpenFileName(self.OptionsDlg, "Select txt file with calibration input fields",basepath, "Text files ("+ext+")")[0]
-                            if len(fname)>0:
-                                shutil.copy(fname, finalfname)
-                                self.MainApp.Config['Mat4Trajectory'] = finalfname
-                                self.MainApp.Config['ID'][self.IDIndex] = id
-                                self.MainApp.UpdateWindowTitle()
+                        if TrajectoryType =='brainsight':
+                            finalfname=self.MainApp.Config['OrigMat4Trajectory'].split('.txt')[0]+'_PlanTUS.txt'
+                            ReplaceTrajectoryBrainsight(self.MainApp.Config['Mat4Trajectory'],TT,id,self.IDIndex,finalfname)
                         else:
-                            if TrajectoryType =='brainsight':
-                                ReplaceTrajectoryBrainsight(self.MainApp.Config['Mat4Trajectory'],TT,id,self.IDIndex,finalfname)
-                            else:
+                            if os.path.splitext(self.MainApp.Config['OrigMat4Trajectory'])[1]=='.txt':
+                                finalfname=os.path.splitext(self.MainApp.Config['OrigMat4Trajectory'])[0]+'_PlanTUS.txt'
                                 shutil.copy(lastfoutname,finalfname)
-                            self.MainApp.Config['Mat4Trajectory'] = finalfname
-                            self.MainApp.Config['ID'][self.IDIndex] = id
-                            self.MainApp.UpdateWindowTitle()
+                            else:
+                                with open(self.MainApp.Config['OrigMat4Trajectory']) as f:
+                                    slicerTraj=yaml.safe_load(f)
+                                finalfname=os.path.splitext(slicerTraj[id])[0]+'_PlanTUS.txt'
+                                shutil.copy(lastfoutname,finalfname)
+                                slicerTraj[id] = finalfname
+                                ext = os.path.splitext(self.MainApp.Config['OrigMat4Trajectory'])[1]
+                                finalfname = os.path.splitext(self.MainApp.Config['OrigMat4Trajectory'])[0]+'_PlanTUS'+ext
+                                with open(finalfname,'w') as f:
+                                    yaml.dump(slicerTraj,f)
+     
+                        self.MainApp.Config['Mat4Trajectory'] = finalfname
+                        self.MainApp.Config['ID'][self.IDIndex] = id
+                        self.MainApp.UpdateWindowTitle()
+                        QMessageBox.information(self.OptionsDlg,'', "Be sure of running Step 1 to update simulation state")
+                                            
+                                            
                 else:
                     print("*"*40)
                     print("*"*5+" Incomplete execution of PlanTUS.")
@@ -537,8 +551,21 @@ class RUN_PLAN_TUS(QObject):
         
         widget = FinalResultViewer(gifti_files)
         layout.addWidget(widget)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        ok_button.setText("Confirm trajectory")
+        ok_button.setStyleSheet("""
+                    QPushButton {
+                        font-weight: bold; 
+                    }
+                """)
+        buttons.accepted.connect(DlgResults.accept)
+        buttons.rejected.connect(DlgResults.reject)
+        layout.addWidget(buttons)
+
         DlgResults.resize(600, 600)
-        DlgResults.exec()
+        return DlgResults.exec()
 
     def showTUSPlanViewer(self):
         DlgResults=QDialog(self.OptionsDlg)
@@ -631,7 +658,8 @@ def RunPlanTUSBackground(queue,
                     t1Path,
                     mshPath,
                     maskPath,
-                    TxConfigName]
+                    TxConfigName,
+                    '--overwrite']
             if runOnlyTrajectory>-1:
                 args.append('--do_only_trajectory')
                 args.append(str(runOnlyTrajectory))
@@ -650,7 +678,8 @@ def RunPlanTUSBackground(queue,
                     t1Path,
                     mshPath,
                     maskPath,
-                    TxConfigName]
+                    TxConfigName,
+                    '--overwrite']
             if runOnlyTrajectory>-1:
                     args.append('--do_only_trajectory')
                     args.append(str(runOnlyTrajectory))

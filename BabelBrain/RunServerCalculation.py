@@ -65,10 +65,17 @@ def planning_carryover_files(cfg, prefix_path):
 
 
 def acoustic_carryover_files(cfg, prefix_path):
+    # The first four files are what the server's per-trajectory reload path reads
+    # (UpdateAcResults/_LoadAcResultData). The phase NORM is not needed to reload a
+    # single trajectory, but IS read (per trajectory) by CombineTrajectories'
+    # complex merge (RunCombineTrajectories.run, amp+phase pairs) — so a trajectory
+    # that was reloaded locally must still carry it over, or the remote merge fails
+    # with FileNotFoundError on '*FullElasticSolutionPhase_Sub_NORM.nii.gz'.
     return [prefix_path + 'DataForSim.h5',
             prefix_path + 'Water_DataForSim.h5',
             prefix_path + 'FullElasticSolution_Sub_NORM.nii.gz',
-            prefix_path + 'Water_FullElasticSolution_Sub_NORM.nii.gz']
+            prefix_path + 'Water_FullElasticSolution_Sub_NORM.nii.gz',
+            prefix_path + 'FullElasticSolutionPhase_Sub_NORM.nii.gz']
 
 
 def thermal_carryover_files(cfg, prefix_path):
@@ -136,9 +143,8 @@ class RunServerCalculation(QObject):
 
     # ── server addressing / preflight ────────────────────────────────────
     def _bind(self):
-        """Point the shared client helpers at this job's server."""
-        cf.BASE = RemoteServers.base_url(self._server)
-        cf.TOKEN = self._server.get('token')
+        """Point the shared client helpers at this job's server (incl. TLS)."""
+        cf.bind_server(self._server)
 
     def preflight(self):
         """Verify the server is reachable and capable, or raise RemoteNotReady."""
@@ -199,7 +205,10 @@ class RunServerCalculation(QObject):
             cf.upload(ws_id, mshfile, 'm2m/' +os.path.split(mshfile)[1])
 
 
-        paths['simbnibs'] = os.path.dirname(seg_server)
+        # seg_server is a SERVER path (its own OS's separators); use the
+        # server-aware dirname so this doesn't collapse to '' when the server and
+        # client run different OSes (e.g. Windows server, macOS client).
+        paths['simbnibs'] = cf.server_dirname(seg_server)
         charm_log = os.path.join(m2m, 'charm_log.html')
         if os.path.isfile(charm_log):
             cf.upload(ws_id, charm_log, 'm2m/charm_log.html')
@@ -628,8 +637,7 @@ def cleanup_session(mainApp):
         return
     srv = (getattr(mainApp, 'Config', None) or {}).get('RemoteServer')
     if srv:
-        cf.BASE = RemoteServers.base_url(srv)
-        cf.TOKEN = srv.get('token')
+        cf.bind_server(srv)
         try:
             cf.delete_workspace(sess['workspace'])
         except Exception:
