@@ -11,16 +11,16 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 from pyvistaqt import QtInteractor
 
 from GUIComponents.AppStyle import style_nav_toolbar
+from GUIComponents.pyvista_navigation_toolbar import PyVistaNavigationToolbar
 
 
 class PyVistaPlotWidget(QWidget):
@@ -42,6 +42,7 @@ class PyVistaPlotWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.setWindowModality(Qt.WindowModality.WindowModal)
 
@@ -59,34 +60,11 @@ class PyVistaPlotWidget(QWidget):
         )
         self.plotter.interactor.setMouseTracking(True)
 
-        # --- Control row: view buttons, export image, toggle acoustic slice ---
-        controls_layout = QHBoxLayout()
-        controls_layout.setContentsMargins(4, 4, 4, 4)
-        controls_layout.setSpacing(6)
-
-        xz_view_button = QPushButton("XZ View")
-        xz_view_button.clicked.connect(self._set_xz_view)
-        controls_layout.addWidget(xz_view_button)
-
-        iso_view_button = QPushButton("Iso View")
-        iso_view_button.clicked.connect(self._set_iso_view)
-        controls_layout.addWidget(iso_view_button)
-
-        export_image_button = QPushButton("Export Image")
-        export_image_button.clicked.connect(self._export_image)
-        controls_layout.addWidget(export_image_button)
-
         self.acoustic_slice_checkbox = QCheckBox("Show Acoustic Slice")
         self.acoustic_slice_checkbox.setChecked(False)
         self.acoustic_slice_checkbox.toggled.connect(
             self._toggle_acoustic_slice
         )
-        controls_layout.addWidget(self.acoustic_slice_checkbox)
-
-        controls_layout.addStretch(1)
-
-        layout.addLayout(controls_layout)
-        # ----------------------------------------------------------------
 
         spatial_step = grid_info["spatial_step"]
 
@@ -152,23 +130,23 @@ class PyVistaPlotWidget(QWidget):
 
         # Rename variables for annular txs
         if "RingFaceDisplay" in tx:
-            tx["FaceDisplay"],tx["VertDisplay"] = self._combine_ring_displays(tx)
-            
+            tx["FaceDisplay"], tx["VertDisplay"] = self._combine_ring_displays(tx)
+
         faces = np.hstack((
-            np.full((tx["FaceDisplay"].shape[0], 1),4,dtype=np.int64,),
-            np.asarray(tx["FaceDisplay"],dtype=np.int64,),
+            np.full((tx["FaceDisplay"].shape[0], 1), 4, dtype=np.int64,),
+            np.asarray(tx["FaceDisplay"], dtype=np.int64,),
         ))
 
-        mesh = pv.PolyData(np.asarray(tx["VertDisplay"] * 1e3),faces,)
+        mesh = pv.PolyData(np.asarray(tx["VertDisplay"] * 1e3), faces,)
 
         self._tx_bounds = mesh.bounds
 
         display_sub_elems = {}
         if show_sub_elements:
-            display_sub_elems['show_edges']=True
-            display_sub_elems['edge_color']="black"
-            display_sub_elems['line_width']=1
-        
+            display_sub_elems['show_edges'] = True
+            display_sub_elems['edge_color'] = "black"
+            display_sub_elems['line_width'] = 1
+
         self.plotter.add_mesh(
             mesh,
             color="venetian_red",
@@ -195,6 +173,25 @@ class PyVistaPlotWidget(QWidget):
 
         self.plotter.render()
 
+        # Add a Matplotlib-style navigation toolbar below the PyVista view.
+        self.nav_toolbar = style_nav_toolbar(
+            PyVistaNavigationToolbar(
+                self.plotter,
+                home_callback=self._set_xz_view,
+                parent=self,
+            )
+        )
+
+        toolbar_spacer = QWidget(self.nav_toolbar)
+        toolbar_spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.nav_toolbar.addWidget(toolbar_spacer)
+        self.nav_toolbar.addWidget(self.acoustic_slice_checkbox)
+
+        layout.addWidget(self.nav_toolbar)
+
     @staticmethod
     def _combine_ring_displays(tx):
         combined_face_display = None
@@ -204,14 +201,14 @@ class PyVistaPlotWidget(QWidget):
                 combined_face_display = tx["RingFaceDisplay"][index]
             else:
                 temp_arr = tx["RingFaceDisplay"][index] + prev_vert_index
-                combined_face_display = np.vstack([combined_face_display,temp_arr])
-            
+                combined_face_display = np.vstack([combined_face_display, temp_arr])
+
             prev_vert_index = int(np.prod(combined_face_display.shape))
-        
+
         combined_vert_display = np.vstack(tx['RingVertDisplay'])
-        
+
         return combined_face_display, combined_vert_display
-    
+
     # --- Nice-bounds rounding helpers ---------------------------------
 
     @staticmethod
@@ -293,9 +290,9 @@ class PyVistaPlotWidget(QWidget):
             grid="back",
             all_edges=True,
             location="outer",
-            xtitle=f"X (mm)",
-            ytitle=f"Y (mm)",
-            ztitle=f"Z (mm)",
+            xtitle="X (mm)",
+            ytitle="Y (mm)",
+            ztitle="Z (mm)",
             fmt="%.0f",
             n_xlabels=n_xlabels,
             n_ylabels=n_ylabels,
@@ -304,36 +301,20 @@ class PyVistaPlotWidget(QWidget):
         self.plotter.reset_camera(bounds=bounds)
 
     def _set_xz_view(self):
-        """Flat xz projection, matching the original default orientation."""
-        self.plotter.view_xz()
+        """Flat xz projection with X increasing from left to right."""
+        self.plotter.view_xz(negative=True)
         self.plotter.camera.up = (0, 0, -1)
         self._refresh_bounds_and_camera()
         self.plotter.render()
-
-    def _set_iso_view(self):
-        """Isometric orientation, viewed from the opposite side of
-        pyvista's default (rotated 180° in azimuth)."""
-        self.plotter.view_isometric()
-        self.plotter.camera.up = (0, 0, -1)
-        self.plotter.camera.elevation += 90
-        self._refresh_bounds_and_camera()
-        self.plotter.render()
-
-    def _export_image(self):
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Transducer Geometry Image",
-            "",
-            "PNG Image (*.png);;JPEG Image (*.jpg);;All Files (*)",
-        )
-        if not file_path:
-            return
-        self.plotter.screenshot(file_path)
+        if hasattr(self, "nav_toolbar"):
+            self.nav_toolbar.push_current_view()
 
     def _toggle_acoustic_slice(self, checked):
         self.acoustic_actor.SetVisibility(checked)
         self._refresh_bounds_and_camera()
         self.plotter.render()
+        if hasattr(self, "nav_toolbar"):
+            self.nav_toolbar.push_current_view()
 
     def closeEvent(self, event):
         self.plotter.close()
@@ -393,7 +374,19 @@ class TransducerVerificationDialog(QDialog):
 
         geometry_container = self._wrap_widget(self.geometry_plot, "Transducer Geometry")
 
-        (image_container, self.image_plot_widget) = self._wrap_plot(self.image_canvas, "Acoustics Water Sim")
+        (image_container, self.image_plot_widget) = self._wrap_plot(
+            self.image_canvas,
+            "Acoustics Water Sim",
+        )
+
+        # Keep the two toolbar rows identical in height so the actual
+        # PyVista and Matplotlib plotting areas receive the same height.
+        toolbar_height = max(
+            self.geometry_plot.nav_toolbar.sizeHint().height(),
+            self.image_plot_widget.toolbar.sizeHint().height(),
+        )
+        self.geometry_plot.nav_toolbar.setFixedHeight(toolbar_height)
+        self.image_plot_widget.toolbar.setFixedHeight(toolbar_height)
 
         plots_layout.addWidget(geometry_container, stretch=1)
         plots_layout.addWidget(image_container, stretch=1)
@@ -471,82 +464,6 @@ class TransducerVerificationDialog(QDialog):
         return container
 
     @staticmethod
-    def _create_scatter_plot(xyz_data, scatter_step=1):
-        xyz_data = np.asarray(xyz_data)
-
-        x_data = xyz_data[::scatter_step, 0]
-        y_data = xyz_data[::scatter_step, 1]
-        z_data = xyz_data[::scatter_step, 2]
-
-        figure = Figure(
-            figsize=(7, 4),
-            tight_layout=True,
-        )
-        canvas = FigureCanvasQTAgg(figure)
-
-        axes = figure.add_subplot(
-            111,
-            projection="3d",
-        )
-
-        axes.scatter(
-            0,
-            0,
-            0,
-            marker="x",
-            color="red",
-            s=100,
-            label="Origin",
-        )
-
-        axes.set_xlabel(f"X (mm)")
-        axes.set_ylabel(f"Y (mm)")
-        axes.set_zlabel(f"Z (mm)")
-        axes.legend()
-
-        # Keep all axes visually proportional.
-        x_range = np.ptp(x_data)
-        y_range = np.ptp(y_data)
-        z_range = np.ptp(z_data)
-
-        max_range = max(
-            x_range,
-            y_range,
-            z_range,
-        )
-
-        if max_range > 0:
-            x_center = (
-                np.max(x_data) + np.min(x_data)
-            ) / 2
-            y_center = (
-                np.max(y_data) + np.min(y_data)
-            ) / 2
-            z_center = (
-                np.max(z_data) + np.min(z_data)
-            ) / 2
-
-            half_range = max_range / 2
-
-            axes.set_xlim(
-                x_center - half_range,
-                x_center + half_range,
-            )
-            axes.set_ylim(
-                y_center - half_range,
-                y_center + half_range,
-            )
-            axes.set_zlim(
-                z_center - half_range,
-                z_center + half_range,
-            )
-
-        axes.invert_zaxis()
-        axes.set_box_aspect((1, 1, 1))
-
-        return canvas
-
-    @staticmethod
     def _create_image_plot(image_data, grid_info):
         figure = Figure(
             figsize=(2, 4),
@@ -568,8 +485,8 @@ class TransducerVerificationDialog(QDialog):
             cmap=plt.cm.jet,
         )
 
-        axes.set_xlabel(f"X (mm)")
-        axes.set_ylabel(f"Z (mm)")
+        axes.set_xlabel("X (mm)")
+        axes.set_ylabel("Z (mm)")
 
         figure.colorbar(
             image,
