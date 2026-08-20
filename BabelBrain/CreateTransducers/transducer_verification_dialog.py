@@ -1,15 +1,13 @@
-import sys
-
+import matplotlib.pyplot as plt
 import numpy as np
+import pyvista as pv
 from matplotlib.backends.backend_qtagg import (
     FigureCanvasQTAgg,
     NavigationToolbar2QT,
 )
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -20,8 +18,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-import pyvista as pv
 from pyvistaqt import QtInteractor
+
+from GUIComponents.AppStyle import style_nav_toolbar
 
 
 class PyVistaPlotWidget(QWidget):
@@ -348,7 +347,7 @@ class PlotWidget(QWidget):
         super().__init__(parent)
 
         self.canvas = canvas
-        self.toolbar = NavigationToolbar2QT(canvas, self)
+        self.toolbar = style_nav_toolbar(NavigationToolbar2QT(canvas, self))
 
         self.toolbar.setMovable(False)
         self.toolbar.setFloatable(False)
