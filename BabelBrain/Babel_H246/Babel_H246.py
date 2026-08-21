@@ -1,40 +1,21 @@
 # This Python file uses the following encoding: utf-8
 
-from multiprocessing import Process,Queue
-import os
-from pathlib import Path
-import sys
-
-from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout
-from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread
-from PySide6.QtUiTools import QUiLoader
-
-import numpy as np
-
 import os
 import sys
 import time
+from multiprocessing import Process, Queue
+
+import numpy as np
 import yaml
 from BabelViscoFDTD.H5pySimple import ReadFromH5py
-from CalculateFieldProcess import CalculateFieldProcess
-from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from _BabelBaseTx import BabelBaseTx
+from CalculateFieldProcess import CalculateFieldProcess
+from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from Utils.paths import resource_path
 
-import platform
-_IS_MAC = platform.system() == 'Darwin'
-
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS) / 'Babel_H246'
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 class H246(BabelBaseTx):
     def __init__(self,parent=None,MainApp=None):
@@ -85,7 +66,7 @@ class H246(BabelBaseTx):
         #Specific parameters for the H246 - to be configured later via a yaml
 
         #with open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'default.yaml'), 'r') as file:
-        with open(os.path.join(resource_path(),'default.yaml'), 'r') as file:
+        with open(os.path.join(resource_path(__file__), 'default.yaml'), 'r') as file:
             config = yaml.safe_load(file)
         print("H246 configuration:")
         print(config)

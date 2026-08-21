@@ -1,30 +1,19 @@
 import logging
-logger = logging.getLogger()
 import os
-from pathlib import Path
 import platform
-import sys
 
 import numpy as np
 
 try:
-    from GPUUtils import InitCUDA,InitOpenCL,InitMetal,InitMLX,get_step_size
+    from GPUUtils import (InitCUDA, InitMetal, InitMLX, InitOpenCL,
+                          get_step_size)
 except:
-    from ..GPUUtils import InitCUDA,InitOpenCL,InitMetal,InitMLX,get_step_size
+    from ..GPUUtils import (InitCUDA, InitMetal, InitMLX, InitOpenCL,
+                            get_step_size)
+from Utils.paths import resource_path
 
-_IS_MAC = platform.system() == 'Darwin'
+logger = logging.getLogger()
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir =  os.path.abspath(os.path.join(os.path.dirname(__file__)))
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 def InitMapFilter(DeviceName='A6000',GPUBackend='OpenCL'):
     global queue 
@@ -36,7 +25,7 @@ def InitMapFilter(DeviceName='A6000',GPUBackend='OpenCL'):
     global clp
 
     kernel_files = [
-        os.path.join(resource_path(), 'map_filter.cpp')
+        os.path.join(resource_path(__file__), 'map_filter.cpp')
     ]
 
     if GPUBackend == 'CUDA':

@@ -1,39 +1,14 @@
 # This Python file uses the following encoding: utf-8
 
-from multiprocessing import Process,Queue
-import os
-from pathlib import Path
-import sys
-
-from PySide6.QtWidgets import QMessageBox, QVBoxLayout
-from PySide6.QtCore import QFile,Slot,QThread
-from PySide6.QtUiTools import QUiLoader
-
 import numpy as np
-
-import os
-import sys
 from BabelViscoFDTD.H5pySimple import ReadFromH5py
-from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
-
+from PySide6.QtCore import Slot
+from PySide6.QtWidgets import QMessageBox
 from trimesh import creation
 
-from .Babel_SingleTx import SingleTx,RunAcousticSim
+from .Babel_SingleTx import SingleTx
+from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
 
-import platform
-_IS_MAC = platform.system() == 'Darwin'
-
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS) / 'Babel_SingleTx'
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 def DistanceOutPlaneToFocus(FocalLength,Diameter):
     return np.sqrt(FocalLength**2-(Diameter/2)**2)

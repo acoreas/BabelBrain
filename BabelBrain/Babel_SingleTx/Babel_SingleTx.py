@@ -1,42 +1,21 @@
 # This Python file uses the following encoding: utf-8
 
-from multiprocessing import Process,Queue
 import os
-from pathlib import Path
-import sys
-
-from PySide6.QtWidgets import QMessageBox, QVBoxLayout
-from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread
-from PySide6.QtUiTools import QUiLoader
+import time
+from multiprocessing import Process, Queue
 
 import numpy as np
-
-import os
-import sys
-import time
 import yaml
 from BabelViscoFDTD.H5pySimple import ReadFromH5py
-from CalculateFieldProcess import CalculateFieldProcess
-from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtWidgets import QMessageBox
 
 from _BabelBaseTx import BabelBaseTx
+from CalculateFieldProcess import CalculateFieldProcess
+from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from Utils.paths import resource_path
 
-import platform
-_IS_MAC = platform.system() == 'Darwin'
-
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS) / 'Babel_SingleTx'
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
-
-def DistanceOutPlaneToFocus(FocalLength,Diameter):
+def DistanceOutPlaneToFocus(FocalLength, Diameter):
     return np.sqrt(FocalLength**2-(Diameter/2)**2)
 
 class SingleTx(BabelBaseTx):
@@ -71,7 +50,7 @@ class SingleTx(BabelBaseTx):
     def DefaultConfig(self,cfile='default.yaml'):
         #Specific parameters for the CTX500 - to be configured later via a yaml
 
-        with open(os.path.join(resource_path(),cfile), 'r') as file:
+        with open(os.path.join(resource_path(__file__), cfile), 'r') as file:
             config = yaml.safe_load(file)
         self.Config=config
 

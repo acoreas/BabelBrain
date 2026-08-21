@@ -1,50 +1,30 @@
 # This Python file uses the following encoding: utf-8
+import os
+import platform
+import re
 import sys
+from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QDialog,QFileDialog,QMessageBox,QStyle
-from PySide6.QtCore import Slot, Qt,QAbstractTableModel
+import yaml
+from PySide6.QtCore import QAbstractTableModel, Qt, Slot
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QMessageBox,
+                               QStyle)
 
+from CreateTransducers.transducer_creator import (CUSTOM_TRANSDUCERS_FOLDER,
+                                                  CustomTransducer,
+                                                  get_class_name)
+from .custom_transducer_dialog import (CUSTOM_TRANSDUCER_OPTION,
+                                       CUSTOM_TRANSDUCER_PREFIX,
+                                       CustomTransducerDialog,
+                                       custom_transducer_display_name)
+import RemoteServers
+from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
 # Important:
 # You need to run the following command to generate the ui_form.py file
 #     pyside6-uic form.ui -o ui_form.py, or
 #     pyside2-uic form.ui -o ui_form.py
 from .ui_form import Ui_Dialog
-from .custom_transducer_dialog import (
-    CUSTOM_TRANSDUCER_OPTION,
-    CUSTOM_TRANSDUCER_PREFIX,
-    CustomTransducerDialog,
-    custom_transducer_display_name,
-)
-import platform
-import os
-from pathlib import Path
-import re
-import yaml
-import sys
-
-sys.path.append(os.path.abspath('../'))
-                
-sys.path.append(os.path.abspath('../../'))
-
-from CreateTransducers.transducer_creator import CustomTransducer, get_class_name, CUSTOM_TRANSDUCERS_FOLDER
-import RemoteServers
-from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
-    
-
-_IS_MAC = platform.system() == 'Darwin'
-
-
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.join(os.path.split(Path(__file__))[0],'..')
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS)
-    else:
-        bundle_dir = os.path.join(Path(__file__).parent,'..')
-
-    return bundle_dir
+from Utils.paths import resource_path
 
 ListTxSteering=['H317','I12378','ATAC','R15148','R15646','IGT64_500','H301','DomeTx']
 
@@ -173,7 +153,7 @@ class SelFiles(QDialog):
         from GUIComponents.AppStyle import app_qss, apply_native_spinbox_style
         self.setStyleSheet(app_qss(self))
         apply_native_spinbox_style(self)  # Windows: compact stacked spin arrows
-        with open(os.path.join(resource_path(),'version-gui.txt'), 'r') as f:
+        with open(os.path.join(resource_path(__file__).parent, 'version-gui.txt'), 'r') as f:
             version=f.readlines()[0]
         self.setWindowTitle("BabelBrain V"+version + " - Select input files ...")
         self.ui.SelTrajectorypushButton.clicked.connect(self.SelectTrajectory)

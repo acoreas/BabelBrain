@@ -1,46 +1,24 @@
 # This Python file uses the following encoding: utf-8
-from multiprocessing import Process,Queue
 import os
-from pathlib import Path
 import sys
-
-from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout
-from PySide6.QtCore import QFile,Slot,QObject,Signal,QThread,Qt
-from PySide6.QtUiTools import QUiLoader
-
+import time
+from multiprocessing import Process, Queue
 
 import numpy as np
-
-
-#import cv2 as cv
-import os
-import sys
-import platform
-import time
 import yaml
 from BabelViscoFDTD.H5pySimple import ReadFromH5py
-from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
-
-from CalculateFieldProcess import CalculateFieldProcess
+from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from _BabelBasePhasedArray import BabelBasePhaseArray
+from CalculateFieldProcess import CalculateFieldProcess
+from GUIComponents.ScrollBars import ScrollBars as WidgetScrollBars
+from Utils.paths import resource_path
 
-_IS_MAC = platform.system() == 'Darwin'
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS) / 'Babel_REMOPD'
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 class REMOPD(BabelBasePhaseArray): 
     def __init__(self,parent=None,MainApp=None):
-        super().__init__(parent=parent,MainApp=MainApp,formtype=os.path.join(resource_path(), "."))
+        super().__init__(parent=parent, MainApp=MainApp, formtype=os.path.join(resource_path(__file__), "."))
 
     # Inherits BabelBasePhaseArray.load_ui (-> _setupTrajectoryTabs); only the
     # form and its wiring differ.
