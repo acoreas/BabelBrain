@@ -69,7 +69,7 @@ from ConvMatTransform import (
     LocaliteTargeting
 )
 from SelFiles.SelFiles import SelFiles,ValidThermalProfile
-from SelFiles.custom_transducer_dialog import CUSTOM_TRANSDUCER_PREFIX
+from GUIComponents.custom_transducer_dialog import CUSTOM_TRANSDUCER_PREFIX
 
 from Options.Options import AdvancedOptions, OptionalParams, ApplyAdvancedConfig
 from ClockDialog import ClockDialog
