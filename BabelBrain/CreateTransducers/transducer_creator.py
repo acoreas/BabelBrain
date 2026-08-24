@@ -8,15 +8,11 @@ import sys
 import tempfile
 
 from jinja2 import Environment, FileSystemLoader
-import matplotlib.pyplot as plt
-import nibabel as nib
 import numpy as np
 from PySide6.QtWidgets import QMessageBox, QDialog
-import pyvista as pv
 import yaml
 
-from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater, InitCuda,InitOpenCL, InitMetal
-from TranscranialModeling.tx_geometries import plot_elements
+from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater, InitCuda, InitOpenCL, InitMetal
 from CreateTransducers.transducer_verification_dialog import TransducerVerificationDialog
 from Utils.paths import resource_path
 
@@ -98,6 +94,12 @@ def overwrite_msgbox(tx_name) -> None:
     message_box.setDefaultButton(QMessageBox.StandardButton.Yes)
     return message_box
 
+def restore_msgbox() -> None:
+    message_box = QMessageBox()
+    message_box.setWindowTitle("New Transducer Creation Cancelled")
+    message_box.setText("Restored previous version of transducer")
+    return message_box
+
 # =============================================================================
 # Main Class
 # =============================================================================
@@ -123,6 +125,7 @@ class CustomTransducer:
         self.is_steerable: bool = False
         self.name: str | None = None
         self.num_elements: int | None = None
+        self.old_tx_temp_dir: str = ''
         self.PlanTUS: dict | None = None
         self.rings: dict | None = None
         self.steering_axes: set = set()
@@ -145,7 +148,7 @@ class CustomTransducer:
         except Exception as error:
             
             # Remove newly created tx files if exception occurs
-            if hasattr(self, "tx_folder"):
+            if hasattr(self, "tx_folder") and not self.old_tx_temp_dir:
                 if self.tx_folder.exists() and self.tx_folder.is_dir():
                     print("Deleting newly created transducer files")
                     
@@ -695,7 +698,15 @@ class CustomTransducer:
             msgbox = overwrite_msgbox(self.class_name)
             
             if msgbox.exec() == QMessageBox.Yes:
-                pass
+                # Create temp directory to store current version of tx files as
+                # backup in case user rejects new transducer design
+                self.old_tx_temp_dir = tempfile.mkdtemp()
+                shutil.copytree(
+                    str(tx_folder),
+                    self.old_tx_temp_dir,
+                    dirs_exist_ok=True,
+                )
+                logging.info(f"Existing transducer files copied to temp folder {self.old_tx_temp_dir}")
             else:
                 raise ValueError("Cancel Action: Transducer already exists")
         
@@ -712,11 +723,13 @@ class CustomTransducer:
         if not os.path.exists(self.tx_parent_folder):
             # Create the directory safely
             self.tx_parent_folder.mkdir(parents=True, exist_ok=True)
-            
-        # Add folder for current transducer
-        if not os.path.exists(self.tx_folder):
-            # Create the directory safely
-            self.tx_folder.mkdir(parents=True, exist_ok=True)
+
+        # Delete existing files
+        if self.tx_folder.exists():
+            shutil.rmtree(self.tx_folder)
+
+        # Create the directory safely
+        self.tx_folder.mkdir(parents=True, exist_ok=True)
         
     def _create_tx_main_file(self):
         tx_main_file_template = self.env.get_template("Babel_Tx.py.jinja")
@@ -900,6 +913,16 @@ class CustomTransducer:
         if user_verification_dialog.exec() == QDialog.DialogCode.Accepted:
             print("User approved the generated transducer.")
         else:
+            logging.info('User did not approve of new transducer design, restoring existing version')
+            shutil.copytree(
+                self.old_tx_temp_dir,
+                str(self.tx_folder),
+                dirs_exist_ok=True,
+            )
+            
+            msgbox = restore_msgbox()
+            msgbox.exec()
+            
             raise ValueError("Cancel Action: User did not approve transducer design")
         
     
