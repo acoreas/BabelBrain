@@ -913,15 +913,16 @@ class CustomTransducer:
         if user_verification_dialog.exec() == QDialog.DialogCode.Accepted:
             print("User approved the generated transducer.")
         else:
-            logging.info('User did not approve of new transducer design, restoring existing version')
-            shutil.copytree(
-                self.old_tx_temp_dir,
-                str(self.tx_folder),
-                dirs_exist_ok=True,
-            )
-            
-            msgbox = restore_msgbox()
-            msgbox.exec()
+            if self.old_tx_temp_dir:
+                logging.info('User did not approve of new transducer design, restoring previous version')
+                shutil.copytree(
+                    self.old_tx_temp_dir,
+                    str(self.tx_folder),
+                    dirs_exist_ok=True,
+                )
+                
+                msgbox = restore_msgbox()
+                msgbox.exec()
             
             raise ValueError("Cancel Action: User did not approve transducer design")
         
