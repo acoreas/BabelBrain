@@ -1,3 +1,10 @@
+"""
+BabelBrain Generated File
+
+Application Version: BabelBrain v{{ babelbrain_version }}
+Custom Transducer Template Version: v{{ template_version }}
+"""
+
 from pathlib import Path
 import sys
 
@@ -6,14 +13,18 @@ sys.path.insert(0, str(module_directory))
 
 import {{ transducer_integration_template }}
 
+
 class RUN_SIM({{ transducer_integration_template }}.RUN_SIM):
-    def __init__(self,**kargs):
-            super().__init__(**kargs)
+    def __init__(self, **kargs):
+        super().__init__(**kargs)
+
 
 class BabelFTD_Simulations({{ transducer_integration_template }}.BabelFTD_Simulations):
-    def __init__(self,**kargs):
-            super().__init__(**kargs)
+    def __init__(self, **kargs):
+        super().__init__(**kargs)
+
 
 class SimulationConditions({{ transducer_integration_template }}.SimulationConditions):
-    def __init__(self,**kargs):
+    def __init__(self, **kargs):
         super().__init__(**kargs)
+

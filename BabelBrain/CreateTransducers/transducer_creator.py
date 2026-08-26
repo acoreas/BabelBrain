@@ -104,12 +104,14 @@ def restore_msgbox() -> None:
 # Main Class
 # =============================================================================
 
+
 class CustomTransducer:
 
-    def __init__(self, transducer_yaml: str = '', gpu: str = '', computing_backend: str ='') -> None:
+    def __init__(self, bb_version: str, transducer_yaml: str = '', gpu: str = '', computing_backend: str = '') -> None:
         
         # Initial Values
         self.aperture_size: float | None = None
+        self.bb_version = bb_version
         self.computing_backend = computing_backend
         self.coordinate_system: str | None = None
         self.coordinate_vars: list[str] = []
@@ -170,9 +172,27 @@ class CustomTransducer:
             raise ValueError(f'{tx_yaml} does not exist')
         
         with open(tx_yaml, 'r') as file:
-            custom_tx_params = yaml.safe_load(file)  
+            custom_tx_params = yaml.safe_load(file)
+            
+        # Record custom tx template version
+        self.template_version = self._get_template_version(tx_yaml)
 
         return custom_tx_params
+    
+    def _get_template_version(self, tx_yaml: str) -> str:
+        version = ''
+        with open(tx_yaml, "r", encoding="utf-8") as f:
+            for line in f:
+                version_found = re.search(r"(?<=Template Version: )(\d|\.)*",line)
+                
+                if version_found:
+                    version = version_found[0]
+                    break
+
+        if not version:
+            raise ValueError("Template version number is missing from your custom transducer yaml file")
+        
+        return version
     
     # =========================================================================
     # PARAMETER VALIDATION PIPELINE
@@ -741,11 +761,12 @@ class CustomTransducer:
         
         # Create Tx Form Text
         tx_main_file_output = tx_main_file_template.render(
-            transducer_template = transducer_template,
-            transducer_template_class_name = transducer_template_class_name,
-            transducer_class_name = self.class_name,
-            # transducer_config = transducer_config,
-            default_yaml = self.tx_default_yaml
+            babelbrain_version=self.bb_version,
+            template_version=self.template_version,
+            transducer_template=transducer_template,
+            transducer_template_class_name=transducer_template_class_name,
+            transducer_class_name=self.class_name,
+            default_yaml=self.tx_default_yaml
         )
         
         # Create Tx Main File
@@ -799,23 +820,24 @@ class CustomTransducer:
         
         # Create Tx Form Text
         tx_form_output = tx_form_template.render(
-            tx_name = self.class_name,
-            # tx_form_description = "Both forms share the same layout scaffold (TxPanelBase) and differ only in their left-panel controls (focal length / diameter vs. transducer-model dropdown).",
-            focal_length_adjustable = self.geometry_type == "simple_focused",
-            diameter_adjustable = self.geometry_type == "simple_focused",
-            multifocal = multifocal,
-            refocusing = refocusing,
-            distance_outplane_to_focus = self.geometry_type == "simple_focused",
-            distance_cone_to_focus = self.geometry_type == "focused_array",
-            steering_x = "x" in self.steering_axes,
-            steering_y = "y" in self.steering_axes,
-            steering_z = "z" in self.steering_axes,
-            steering_z_name = steering_z_name,
-            device_skin_to_target_label = device_skin_to_target_label,
-            xy_mech = xy_mech,
-            skin_distance = skin_distance,
-            z_mechanic = z_mechanic,
-            alternative_tissue_warning_value = alternative_tissue_warning_value
+            babelbrain_version=self.bb_version,
+            template_version=self.template_version,
+            tx_name=self.class_name,
+            focal_length_adjustable=self.geometry_type == "simple_focused",
+            diameter_adjustable=self.geometry_type == "simple_focused",
+            multifocal=multifocal,
+            refocusing=refocusing,
+            distance_outplane_to_focus=self.geometry_type == "simple_focused",
+            distance_cone_to_focus=self.geometry_type == "focused_array",
+            steering_x="x" in self.steering_axes,
+            steering_y="y" in self.steering_axes,
+            steering_z="z" in self.steering_axes,
+            steering_z_name=steering_z_name,
+            device_skin_to_target_label=device_skin_to_target_label,
+            xy_mech=xy_mech,
+            skin_distance=skin_distance,
+            z_mechanic=z_mechanic,
+            alternative_tissue_warning_value=alternative_tissue_warning_value
         )
         
         # Create Tx Form File
@@ -830,7 +852,9 @@ class CustomTransducer:
         
         # Create Tx Form Text
         tx_integration_output = tx_integration_file_template.render(
-            transducer_integration_template = transducer_integration_template,
+            babelbrain_version=self.bb_version,
+            template_version=self.template_version,
+            transducer_integration_template=transducer_integration_template,
         )
         
         # Create Tx Main File

@@ -1,6 +1,11 @@
-"""Programmatic Step-2 forms for {{ tx_name }} transducer. 
-{{ tx_form_description }}
+"""
+BabelBrain Generated File
 
+Application Version: BabelBrain v{{ babelbrain_version }}
+Custom Transducer Template Version: v{{ template_version }}
+
+Description:
+Programmatic Step-2 form for {{ tx_name }} transducer.
 The common bottom half is built by TxPanelBase._build_mech_and_actions().
 """
 
@@ -13,6 +18,7 @@ from GUIComponents.TxPanelBase import (
     form_row,
 )
 from PySide6.QtWidgets import QCheckBox
+
 
 class {{ tx_name }}Form(TxPanelBase):
     def _build_left_panel(self):
@@ -187,5 +193,4 @@ class {{ tx_name }}Form(TxPanelBase):
         )
 
         return frame
-            
-        
+

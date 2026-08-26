@@ -177,6 +177,7 @@ class SelFiles(QDialog):
         apply_native_spinbox_style(self)  # Windows: compact stacked spin arrows
         with open(os.path.join(resource_path(__file__).parent, 'version-gui.txt'), 'r') as f:
             version = f.readlines()[0]
+        self.bb_version = version
         self.setWindowTitle("BabelBrain V"+version + " - Select input files ...")
         self.ui.SelTrajectorypushButton.clicked.connect(self.SelectTrajectory)
         self.ui.SelT1WpushButton.clicked.connect(self.SelectT1W)
@@ -686,6 +687,7 @@ class SelFiles(QDialog):
                 try:
                     gpu, computing_backend = self.GetSelectedComputingEngine()
                     temp_tx = CustomTransducer(
+                        bb_version=self.bb_version,
                         transducer_yaml=self.custom_transducer_config,
                         computing_backend=computing_backend,
                         gpu=gpu)
