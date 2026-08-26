@@ -177,7 +177,7 @@ class SelFiles(QDialog):
         apply_native_spinbox_style(self)  # Windows: compact stacked spin arrows
         with open(os.path.join(resource_path(__file__).parent, 'version-gui.txt'), 'r') as f:
             version = f.readlines()[0]
-        self.bb_version = version
+        self.bb_version = version.strip()
         self.setWindowTitle("BabelBrain V"+version + " - Select input files ...")
         self.ui.SelTrajectorypushButton.clicked.connect(self.SelectTrajectory)
         self.ui.SelT1WpushButton.clicked.connect(self.SelectT1W)
