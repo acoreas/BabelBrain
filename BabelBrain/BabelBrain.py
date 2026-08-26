@@ -410,7 +410,7 @@ class BabelBrain(QWidget):
         CTMapCombo = widget._dfCTParams.iloc[widget.ui.CTMappingcomboBox.currentIndex()].name
         Mat4Trajectory=widget.ui.TrajectorylineEdit.text()
         ThermalProfile=widget.ui.ThermalProfilelineEdit.text()
-        custom_tx_yaml= widget.custom_transducer_config
+        last_custom_tx_yaml= widget.custom_transducer_config
         if widget.ui.SimbNIBSTypecomboBox.currentIndex()==0:
             SimbNIBSType ='charm'
         else:
@@ -462,7 +462,7 @@ class BabelBrain(QWidget):
         self.Config['Mat4Trajectory']=Mat4Trajectory
         self.Config['OrigMat4Trajectory']=Mat4Trajectory
         self.Config['ThermalProfile']=ThermalProfile
-        self.Config['custom_tx_yaml']=custom_tx_yaml
+        self.Config['last_custom_tx_yaml']=last_custom_tx_yaml
         self.Config['T1W']=T1W
         self.Config['bUseCT']=bUseCT
         self.Config['CTType']=CTType
@@ -2216,7 +2216,8 @@ def main():
         selwidget.ui.T1WlineEdit.setText(prevConfig['T1W'])
         selwidget.ui.TrajectorylineEdit.setText(prevConfig['Mat4Trajectory'])
         selwidget.ui.ThermalProfilelineEdit.setText(prevConfig['ThermalProfile'])
-        selwidget.custom_transducer_config = prevConfig['custom_tx_yaml']
+        if 'last_custom_tx_yaml' in prevConfig:
+            selwidget.custom_transducer_config = prevConfig['last_custom_tx_yaml']
         if 'CT_or_ZTE_input' in prevConfig:
             selwidget.ui.CTlineEdit.setText(prevConfig['CT_or_ZTE_input'])
             selwidget.ui.CTTypecomboBox.setCurrentIndex(prevConfig['CTType'])
@@ -2262,7 +2263,10 @@ def main():
                     selwidget.SelectComputingEngine(GPU=GPU,Backend=Backend)
 
         if 'TxSystem' in prevConfig:
-            selwidget.SelectTxSystem(prevConfig['TxSystem'],prevConfig['is_custom_tx'])
+            if 'is_custom_tx' in prevConfig:
+                selwidget.SelectTxSystem(prevConfig['TxSystem'],prevConfig['is_custom_tx'])
+            else:
+                selwidget.SelectTxSystem(prevConfig['TxSystem'])
         if 'MultiPoint' in prevConfig:
             if prevConfig['EnableMultiPoint']:
                 selwidget.ui.MultiPointTypecomboBox.setCurrentIndex(1)
