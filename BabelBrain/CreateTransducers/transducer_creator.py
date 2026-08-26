@@ -774,8 +774,15 @@ class CustomTransducer:
             f.write(tx_main_file_output)
             
         # Create default.yaml File
+        safe_transducer_config = self._make_yaml_safe(transducer_config)
+
         with open(self.tx_default_yaml, "w") as f:
-            yaml.dump(transducer_config, f, default_flow_style=False, sort_keys=False)
+            yaml.safe_dump(
+                safe_transducer_config,
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
         
     def _create_tx_gui_file(self):
         tx_form_template = self.env.get_template("TxForm.py.jinja")
@@ -917,6 +924,15 @@ class CustomTransducer:
             
         return transducer_config
     
+    def _make_yaml_safe(self, value):
+        if isinstance(value, dict):
+            return {self._make_yaml_safe(k): self._make_yaml_safe(v) for k, v in value.items()}
+
+        if isinstance(value, (list, tuple, set)):
+            return [self._make_yaml_safe(v) for v in value]
+
+        return value
+
     # =============================================================================
     # TRANSDUCER VALIDATION
     # =============================================================================

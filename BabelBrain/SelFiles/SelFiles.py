@@ -731,7 +731,7 @@ class SelFiles(QDialog):
             tx_default_yaml = (CUSTOM_TRANSDUCERS_FOLDER / f"Babel_{tx_display_name}" / "default.yaml")
 
             with open(tx_default_yaml, "r") as file:
-                tx_params = yaml.load(file, Loader=yaml.UnsafeLoader,)
+                tx_params = yaml.safe_load(file)
 
             steering_enabled = (len(tx_params["steering_axes"]) == 3)
         else:
