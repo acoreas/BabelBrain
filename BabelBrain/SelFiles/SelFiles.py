@@ -39,7 +39,7 @@ def show_error_dialog(
     message_box = QMessageBox(parent)
     message_box.setIcon(QMessageBox.Icon.Critical)
     message_box.setWindowTitle(title)
-    message_box.setText(f"Unable to create transducer\n\nReason:\n{str(error)}")
+    message_box.setText(f"Unable to create transducer\n\n{error}")
     message_box.setStandardButtons(QMessageBox.StandardButton.Ok)
     message_box.exec()
 

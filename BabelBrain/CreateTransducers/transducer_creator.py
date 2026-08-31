@@ -131,6 +131,7 @@ class CustomTransducer:
         self.old_tx_temp_dir: str = ''
         self.PlanTUS: dict | None = None
         self.remote_server = remote_server
+        self.yaml_file = transducer_yaml
         self.rings: dict | None = None
         self.steering_axes: set = set()
         self.xsteering_limits: list | None = None
@@ -139,8 +140,12 @@ class CustomTransducer:
         
         try:
             # Load/Validate transducer details
-            tx_params = self.load_custom_tx_config_file(transducer_yaml)
-            self._validate_custom_tx_params(tx_params)
+            try:
+                tx_params = self.load_custom_tx_config_file(self.yaml_file)
+                self._validate_custom_tx_params(tx_params)
+            except Exception as error:
+                raise self._format_yaml_input_error(error) from error
+
             print("Custom transducer file loading and validation complete")
             
             # Create transducer files needed for operation
@@ -161,6 +166,185 @@ class CustomTransducer:
                 
             raise error
     
+    # =========================================================================
+    # YAML ERROR REPORTING
+    # =========================================================================
+
+    def _get_yaml_error_line(self, error: Exception | str):
+        """
+        Return the YAML row and source text associated with an input error.
+
+        Syntax errors use PyYAML's exact problem mark. Validation errors are
+        matched against the composed YAML node tree using information already
+        included in the validation error message.
+        """
+        if not self.yaml_file or not os.path.isfile(self.yaml_file):
+            return None
+
+        with open(self.yaml_file, "r", encoding="utf-8") as file:
+            yaml_text = file.read()
+
+        # YAML syntax/parser errors already contain an exact source location,
+        # so no additional matching is needed for these errors.
+        if isinstance(error, yaml.MarkedYAMLError) and error.problem_mark is not None:
+            line_index = error.problem_mark.line
+            lines = yaml_text.splitlines()
+            line_text = lines[line_index].rstrip() if line_index < len(lines) else ""
+            return line_index + 1, line_text
+
+        # Compose the YAML into nodes rather than loading it into plain Python
+        # objects. PyYAML nodes retain their original source row information.
+        try:
+            root = yaml.compose(yaml_text)
+        except yaml.YAMLError:
+            return None
+
+        if root is None:
+            return None
+
+        error_text = str(error)
+        error_text_lower = error_text.lower()
+
+        # Some validation messages identify a specific list item as key[index].
+        # Capture that first so we can point to the exact list entry when possible.
+        indexed_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]", error_text)
+        indexed_key = indexed_match.group(1) if indexed_match else None
+        indexed_value = int(indexed_match.group(2)) if indexed_match else None
+
+        # Numeric-list validation messages also identify the parent YAML section
+        # (for example, "elements contains invalid entries"). Keeping that context
+        # avoids matching an identically named key in another section.
+        context_match = re.search(
+            r"([A-Za-z_][A-Za-z0-9_]*) contains invalid entries",
+            error_text,
+        )
+        context_name = context_match.group(1) if context_match else None
+
+        # First preference: locate an explicitly indexed entry, e.g. x[3].
+        # Restrict the search to the named parent section when one is available.
+        if indexed_key is not None:
+            def find_indexed(node, active_section=None):
+                if isinstance(node, yaml.MappingNode):
+                    for key_node, value_node in node.value:
+                        key = str(key_node.value)
+                        section = key if key == context_name else active_section
+
+                        if key == indexed_key and isinstance(value_node, yaml.SequenceNode):
+                            if context_name is None or active_section == context_name:
+                                if 0 <= indexed_value < len(value_node.value):
+                                    return value_node.value[indexed_value]
+
+                        result = find_indexed(value_node, section)
+                        if result is not None:
+                            return result
+
+                elif isinstance(node, yaml.SequenceNode):
+                    for item_node in node.value:
+                        result = find_indexed(item_node, active_section)
+                        if result is not None:
+                            return result
+
+                return None
+
+            node = find_indexed(root)
+            if node is not None:
+                line_index = node.start_mark.line
+                lines = yaml_text.splitlines()
+                return line_index + 1, lines[line_index].rstrip()
+
+        # Second preference: locate a scalar value quoted/referenced by the
+        # validation message. This works well for invalid numeric/string values.
+        def find_scalar(node):
+            if isinstance(node, yaml.ScalarNode):
+                value = str(node.value)
+                if value and value.lower() in error_text_lower:
+                    return node
+
+            elif isinstance(node, yaml.MappingNode):
+                for _, value_node in node.value:
+                    result = find_scalar(value_node)
+                    if result is not None:
+                        return result
+
+            elif isinstance(node, yaml.SequenceNode):
+                for item_node in node.value:
+                    result = find_scalar(item_node)
+                    if result is not None:
+                        return result
+
+            return None
+
+        scalar_node = find_scalar(root)
+        if scalar_node is not None:
+            line_index = scalar_node.start_mark.line
+            lines = yaml_text.splitlines()
+            return line_index + 1, lines[line_index].rstrip()
+
+        # Final fallback: locate a YAML key named in the validation message.
+        # This is mainly useful for wrong-type or otherwise invalid parameters.
+        def find_key(node):
+            if isinstance(node, yaml.MappingNode):
+                for key_node, value_node in node.value:
+                    key = str(key_node.value)
+
+                    if re.search(
+                        rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
+                        error_text,
+                        re.IGNORECASE,
+                    ):
+                        return key_node
+
+                    result = find_key(value_node)
+                    if result is not None:
+                        return result
+
+            elif isinstance(node, yaml.SequenceNode):
+                for item_node in node.value:
+                    result = find_key(item_node)
+                    if result is not None:
+                        return result
+
+            return None
+
+        key_node = find_key(root)
+        if key_node is not None:
+            line_index = key_node.start_mark.line
+            lines = yaml_text.splitlines()
+            return line_index + 1, lines[line_index].rstrip()
+
+        return None
+
+    def _format_yaml_input_error(self, error: Exception) -> ValueError:
+        """
+        Add the YAML source row to an input/validation error before it reaches
+        the GUI error dialog.
+        """
+        yaml_location = self._get_yaml_error_line(error)
+        error_message = str(error)
+
+        # If a row cannot be determined, preserve the original validation
+        # message rather than reporting a potentially incorrect YAML location.
+        if yaml_location is None:
+            return ValueError(error_message)
+
+        line, line_text = yaml_location
+
+        if isinstance(error, yaml.MarkedYAMLError):
+            problem = error.problem or error_message
+            error_message = f"YAML error on line {line}:\nyaml_line\n\n{problem}"
+        else:
+            error_message = f"YAML validation error on line {line}:yaml_line\n\nReason:\n{error_message}"
+
+        # Include the source row itself so the user can immediately see the
+        # YAML entry that should be inspected or corrected.
+        if line_text:
+            # error_message += f"\n\n{line_text.strip()}"
+            error_message = error_message.replace("yaml_line","\n"+line_text.strip())
+        else:
+            error_message = error_message.replace("yaml_line","\n"+line_text.strip())
+
+        return ValueError(error_message)
+
     # =========================================================================
     # FILE LOADING
     # =========================================================================
