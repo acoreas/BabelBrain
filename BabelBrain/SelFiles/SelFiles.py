@@ -10,6 +10,7 @@ from PySide6.QtCore import QAbstractTableModel, Qt, Slot
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QMenu,
                                QMessageBox, QStyle, QWidget)
 
+from BuildInfo import TitleSuffix
 from CreateTransducers.transducer_creator import (CUSTOM_TRANSDUCERS_FOLDER,
                                                   CustomTransducer,
                                                   get_class_name)
@@ -178,7 +179,12 @@ class SelFiles(QDialog):
         with open(os.path.join(resource_path(__file__).parent, 'version-gui.txt'), 'r') as f:
             version = f.readlines()[0]
         self.bb_version = version.strip()
-        self.setWindowTitle("BabelBrain V"+version + " - Select input files ...")
+        # This is the first screen users see, so a dev/test build has to say so
+        # here too - same annotation as the main window. Empty for source runs
+        # and stable releases. rstrip() because readlines()[0] keeps the file's
+        # trailing newline, which would otherwise sit in the middle of the title.
+        self.setWindowTitle("BabelBrain V"+version.rstrip() + TitleSuffix() +
+                            " - Select input files ...")
         self.ui.SelTrajectorypushButton.clicked.connect(self.SelectTrajectory)
         self.ui.SelT1WpushButton.clicked.connect(self.SelectT1W)
         self.ui.SelCTpushButton.clicked.connect(self.SelectCT)

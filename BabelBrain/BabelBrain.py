@@ -57,6 +57,7 @@ from GUIComponents.AppStyle import style_nav_toolbar
 from nibabel import processing
 from superqt import QLabeledDoubleRangeSlider
 
+from BuildInfo import GetBuildLabel, TitleSuffix
 from CalculateMaskProcess import CalculateMaskProcess
 from CTZTEProcessing import ConfirmPseudoCT
 from ConvMatTransform import (
@@ -507,6 +508,11 @@ class BabelBrain(QWidget):
         self.Config['T1WIso'] = self.Config['OutputFilesPath'] + os.sep + re.sub(r'\.nii(\.gz)?$', '', os.path.split(self.Config['T1W'])[1]) + '-isotropic.nii.gz'
         with open(os.path.join(resource_path(__file__),'version-gui.txt'), 'r') as f:
             self.Config['version'] =f.readlines()[0]
+        # Which build this is, for non-stable builds only (empty otherwise).
+        # Kept separate from ['version'] so anything parsing the version string
+        # - including the Brainsight "Created by:" header, which has to stay a
+        # bare approved version number - is unaffected.
+        self.Config['BuildLabel'] = GetBuildLabel()
 
         self.Config['MultiPoint']=''
         self.Config['EnableMultiPoint']=False
@@ -857,8 +863,11 @@ class BabelBrain(QWidget):
 
     def UpdateWindowTitle(self):
         IDTitle='+'.join(self.Config['ID'])
+        # Same annotation as the file-selection dialog; empty for source runs
+        # and stable releases, where the plain version number is the signal.
+        BuildTitle=TitleSuffix(self.Config.get('BuildLabel',''))
         self.setWindowTitle('BabelBrain V'+
-                            self.Config['version'] +' - ' + 
+                            self.Config['version'].rstrip() + BuildTitle +' - ' + 
                             IDTitle + ' - ' + 
                             self.Config['TxSystem'] + ' - ' + 
                             os.path.split(self.Config['ThermalProfile'])[1].split('.yaml')[0])
@@ -1158,10 +1167,13 @@ class BabelBrain(QWidget):
             AcWidget=self.AcSim._Widgets[self._TrajectoryNumber]
             LocTraj=LocaliteTargeting.from_file(self.Config['Mat4Trajectory'])
             prevSteering=LocTraj[self._TrajectoryNumber].steering
-            InitCorrecX=np.round(prevSteering[2],1) #we emulate the rounding in the controls
-            InitCorrecY=np.round(prevSteering[1],1)
-            InitCorrecZ=prevSteering[0]-AcWidget.DistanceSkinLabel.property('UserData')
-
+            InitCorrecX=0.0
+            InitCorrecY=0.0
+            InitCorrecZ=0.0
+            if self.Config['TxSystem']=='REMOPD':
+                InitCorrecX=np.round(prevSteering[2],1) #we emulate the rounding in the controls
+                InitCorrecY=np.round(prevSteering[1],1)
+                InitCorrecZ=prevSteering[0]-AcWidget.DistanceSkinLabel.property('UserData')
 
             FocIJK=np.ones((4,1))
             FocIJK[:3,0]=np.array(np.where(self._FinalMask[self._TrajectoryNumber]==5)).flatten()
@@ -1186,9 +1198,13 @@ class BabelBrain(QWidget):
 
             #The difference in RAS is converted to the Localite convention and added to the pose translation vector
             LocTraj[self._TrajectoryNumber].update_localite_pose(FocRASAdjust[0],FocRASAdjust[1],FocRASAdjust[2])
-            LocTraj[self._TrajectoryNumber].steering[0]=AcWidget.ZSteeringSpinBox.value()
-            LocTraj[self._TrajectoryNumber].steering[1]=-AcWidget.YSteeringSpinBox.value()
-            LocTraj[self._TrajectoryNumber].steering[2]=-AcWidget.XSteeringSpinBox.value()
+
+            if hasattr(AcWidget,'ZSteeringSpinBox'):
+                LocTraj[self._TrajectoryNumber].steering[0]=AcWidget.ZSteeringSpinBox.value()
+            if hasattr(AcWidget,'YSteeringSpinBox'):
+                LocTraj[self._TrajectoryNumber].steering[1]=-AcWidget.YSteeringSpinBox.value()
+            if hasattr(AcWidget,'XSteeringSpinBox'):
+                LocTraj[self._TrajectoryNumber].steering[2]=-AcWidget.XSteeringSpinBox.value()
             LocTraj.to_file(newFName)
         return newFName
 
@@ -1839,10 +1855,15 @@ class BabelBrain(QWidget):
 
     def SendTelemetry(self,waittocomplete=False):
         #we will break in segments of 
+        # Report the build, not just the version: without this every dev and
+        # test build is indistinguishable from the release of the same version.
+        AppVersion=self.Config['version'].rstrip()
+        if self.Config.get('BuildLabel',''):
+            AppVersion+=' ['+self.Config['BuildLabel']+']'
         send_telemetry('BabelBrain log',
                        idpath=_LocationInstallID,
                        session_date=_date_session,
-                       APP_VERSION=self.Config['version'].rstrip(),
+                       APP_VERSION=AppVersion,
                        data=self._TelmetryMsgs,
                        waittocomplete=waittocomplete)
         self._TelmetryMsgs=[] #we clean the list
