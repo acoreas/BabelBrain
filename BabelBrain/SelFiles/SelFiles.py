@@ -686,11 +686,13 @@ class SelFiles(QDialog):
 
                 try:
                     gpu, computing_backend = self.GetSelectedComputingEngine()
+                    self.remote_server = self.GetSelectedServer()
                     temp_tx = CustomTransducer(
                         bb_version=self.bb_version,
                         transducer_yaml=self.custom_transducer_config,
                         computing_backend=computing_backend,
-                        gpu=gpu)
+                        gpu=gpu,
+                        remote_server=self.remote_server)
 
                 except Exception as error:
                     if "Cancel Action" not in str(error):

@@ -15,6 +15,7 @@ import yaml
 from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater, InitCuda, InitOpenCL, InitMetal
 from CreateTransducers.transducer_verification_dialog import TransducerVerificationDialog
 from Utils.paths import resource_path
+from RunServerCalculation import RunServerCalculation, RAYLEIGH_TEST
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def restore_msgbox() -> None:
 
 class CustomTransducer:
 
-    def __init__(self, bb_version: str, transducer_yaml: str = '', gpu: str = '', computing_backend: str = '') -> None:
+    def __init__(self, bb_version: str, transducer_yaml: str = '', gpu: str = '', computing_backend: str = '', remote_server: dict | None = None) -> None:
         
         # Initial Values
         self.aperture_size: float | None = None
@@ -129,6 +130,7 @@ class CustomTransducer:
         self.num_elements: int | None = None
         self.old_tx_temp_dir: str = ''
         self.PlanTUS: dict | None = None
+        self.remote_server = remote_server
         self.rings: dict | None = None
         self.steering_axes: set = set()
         self.xsteering_limits: list | None = None
@@ -1041,13 +1043,27 @@ class CustomTransducer:
         ).astype(np.float32)
         
         
-        self.initialize_gpu()    
-        u2=ForwardSimple(cwvnb_extlay,
-                         sim_conditions._Tx['center'].astype(np.float32),
-                         sim_conditions._Tx['ds'].astype(np.float32),
-                         u0,
-                         rf,
-                         deviceMetal="M1")
+        if self.computing_backend in 'Server':
+            remote_calc = RunServerCalculation(
+                step=RAYLEIGH_TEST,
+                server=self.remote_server,
+                standalone_args={
+                    'cwvnb_extlay': cwvnb_extlay,
+                    'center': sim_conditions._Tx['center'].astype(np.float32),
+                    'ds': sim_conditions._Tx['ds'].astype(np.float32),
+                    'u0': u0,
+                    'rf': rf,
+                },
+            )
+            u2=remote_calc.run()
+        else:
+            self.initialize_gpu()    
+            u2=ForwardSimple(cwvnb_extlay,
+                             sim_conditions._Tx['center'].astype(np.float32),
+                             sim_conditions._Tx['ds'].astype(np.float32),
+                             u0,
+                             rf,
+                             deviceMetal="M1")
         u2 *= Material['Water'][0]*Material['Water'][1]
         u2=np.reshape(u2,xp.shape)
         
