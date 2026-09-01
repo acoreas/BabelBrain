@@ -19,6 +19,11 @@ from RunServerCalculation import RunServerCalculation, RAYLEIGH_TEST
 
 logger = logging.getLogger(__name__)
 
+class YAMLParameterError(Exception):
+    def __init__(self, message, full_key=None):
+        self.full_key = full_key
+        super().__init__(message)
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -132,6 +137,7 @@ class CustomTransducer:
         self.PlanTUS: dict | None = None
         self.remote_server = remote_server
         self.yaml_file = transducer_yaml
+        self.yaml_line_info: dict | None = None
         self.rings: dict | None = None
         self.steering_axes: set = set()
         self.xsteering_limits: list | None = None
@@ -142,6 +148,7 @@ class CustomTransducer:
             # Load/Validate transducer details
             try:
                 tx_params = self.load_custom_tx_config_file(self.yaml_file)
+                self.yaml_line_info = self._get_yaml_line_numbers()
                 self._validate_custom_tx_params(tx_params)
             except Exception as error:
                 raise self._format_yaml_input_error(error) from error
@@ -170,164 +177,66 @@ class CustomTransducer:
     # YAML ERROR REPORTING
     # =========================================================================
 
-    def _get_yaml_error_line(self, error: Exception | str):
-        """
-        Return the YAML row and source text associated with an input error.
+    def _get_yaml_line_numbers(self):
 
-        Syntax errors use PyYAML's exact problem mark. Validation errors are
-        matched against the composed YAML node tree using information already
-        included in the validation error message.
-        """
-        if not self.yaml_file or not os.path.isfile(self.yaml_file):
-            return None
+        with open(self.yaml_file, "r") as f:
+            lines = f.readlines()
 
-        with open(self.yaml_file, "r", encoding="utf-8") as file:
-            yaml_text = file.read()
+        root = yaml.compose("".join(lines))
 
-        # YAML syntax/parser errors already contain an exact source location,
-        # so no additional matching is needed for these errors.
-        if isinstance(error, yaml.MarkedYAMLError) and error.problem_mark is not None:
-            line_index = error.problem_mark.line
-            lines = yaml_text.splitlines()
-            line_text = lines[line_index].rstrip() if line_index < len(lines) else ""
-            return line_index + 1, line_text
+        line_numbers = {}
 
-        # Compose the YAML into nodes rather than loading it into plain Python
-        # objects. PyYAML nodes retain their original source row information.
-        try:
-            root = yaml.compose(yaml_text)
-        except yaml.YAMLError:
-            return None
+        def walk(node, path=""):
 
-        if root is None:
-            return None
-
-        error_text = str(error)
-        error_text_lower = error_text.lower()
-
-        # Some validation messages identify a specific list item as key[index].
-        # Capture that first so we can point to the exact list entry when possible.
-        indexed_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]", error_text)
-        indexed_key = indexed_match.group(1) if indexed_match else None
-        indexed_value = int(indexed_match.group(2)) if indexed_match else None
-
-        # Numeric-list validation messages also identify the parent YAML section
-        # (for example, "elements contains invalid entries"). Keeping that context
-        # avoids matching an identically named key in another section.
-        context_match = re.search(
-            r"([A-Za-z_][A-Za-z0-9_]*) contains invalid entries",
-            error_text,
-        )
-        context_name = context_match.group(1) if context_match else None
-
-        # First preference: locate an explicitly indexed entry, e.g. x[3].
-        # Restrict the search to the named parent section when one is available.
-        if indexed_key is not None:
-            def find_indexed(node, active_section=None):
-                if isinstance(node, yaml.MappingNode):
-                    for key_node, value_node in node.value:
-                        key = str(key_node.value)
-                        section = key if key == context_name else active_section
-
-                        if key == indexed_key and isinstance(value_node, yaml.SequenceNode):
-                            if context_name is None or active_section == context_name:
-                                if 0 <= indexed_value < len(value_node.value):
-                                    return value_node.value[indexed_value]
-
-                        result = find_indexed(value_node, section)
-                        if result is not None:
-                            return result
-
-                elif isinstance(node, yaml.SequenceNode):
-                    for item_node in node.value:
-                        result = find_indexed(item_node, active_section)
-                        if result is not None:
-                            return result
-
-                return None
-
-            node = find_indexed(root)
-            if node is not None:
-                line_index = node.start_mark.line
-                lines = yaml_text.splitlines()
-                return line_index + 1, lines[line_index].rstrip()
-
-        # Second preference: locate a scalar value quoted/referenced by the
-        # validation message. This works well for invalid numeric/string values.
-        def find_scalar(node):
-            if isinstance(node, yaml.ScalarNode):
-                value = str(node.value)
-                if value and value.lower() in error_text_lower:
-                    return node
-
-            elif isinstance(node, yaml.MappingNode):
-                for _, value_node in node.value:
-                    result = find_scalar(value_node)
-                    if result is not None:
-                        return result
-
-            elif isinstance(node, yaml.SequenceNode):
-                for item_node in node.value:
-                    result = find_scalar(item_node)
-                    if result is not None:
-                        return result
-
-            return None
-
-        scalar_node = find_scalar(root)
-        if scalar_node is not None:
-            line_index = scalar_node.start_mark.line
-            lines = yaml_text.splitlines()
-            return line_index + 1, lines[line_index].rstrip()
-
-        # Final fallback: locate a YAML key named in the validation message.
-        # This is mainly useful for wrong-type or otherwise invalid parameters.
-        def find_key(node):
             if isinstance(node, yaml.MappingNode):
+
                 for key_node, value_node in node.value:
-                    key = str(key_node.value)
 
-                    if re.search(
-                        rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
-                        error_text,
-                        re.IGNORECASE,
-                    ):
-                        return key_node
+                    key = key_node.value
+                    current_path = f"{path}.{key}" if path else key
 
-                    result = find_key(value_node)
-                    if result is not None:
-                        return result
+                    # PyYAML line numbers are zero-based
+                    line_number = key_node.start_mark.line + 1
+
+                    line_numbers[current_path] = {
+                        "line": line_number,
+                        "text": lines[line_number - 1].rstrip("\n"),
+                    }
+
+                    walk(value_node, current_path)
 
             elif isinstance(node, yaml.SequenceNode):
-                for item_node in node.value:
-                    result = find_key(item_node)
-                    if result is not None:
-                        return result
 
-            return None
+                for i, item_node in enumerate(node.value):
 
-        key_node = find_key(root)
-        if key_node is not None:
-            line_index = key_node.start_mark.line
-            lines = yaml_text.splitlines()
-            return line_index + 1, lines[line_index].rstrip()
+                    current_path = f"{path}[{i}]"
 
-        return None
+                    # PyYAML line numbers are zero-based
+                    line_number = item_node.start_mark.line + 1
 
-    def _format_yaml_input_error(self, error: Exception) -> ValueError:
+                    line_numbers[current_path] = {
+                        "line": line_number,
+                        "text": lines[line_number - 1].rstrip("\n"),
+                    }
+
+                    walk(item_node, current_path)
+
+        walk(root)
+
+        return line_numbers
+
+    def _format_yaml_input_error(self, error) -> ValueError:
         """
         Add the YAML source row to an input/validation error before it reaches
         the GUI error dialog.
         """
-        yaml_location = self._get_yaml_error_line(error)
-        error_message = str(error)
+        if not isinstance(error,YAMLParameterError) or "missing" in str(error):
+            return error
+        
+        error_message = str(error).strip()
 
-        # If a row cannot be determined, preserve the original validation
-        # message rather than reporting a potentially incorrect YAML location.
-        if yaml_location is None:
-            return ValueError(error_message)
-
-        line, line_text = yaml_location
+        line = self.yaml_line_info[error.full_key]["line"]
+        line_text = self.yaml_line_info[error.full_key]["text"]
 
         if isinstance(error, yaml.MarkedYAMLError):
             problem = error.problem or error_message
@@ -411,7 +320,7 @@ class CustomTransducer:
     # INTERNAL HELPERS (GENERIC)
     # ---------------------------------------------------------------------
     
-    def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False):
+    def _get_param(self, key: str, expected_type: type | tuple[type, ...], param_dict: dict, optional: bool = False, parent_key: str = "", list_type: type | tuple[type, ...] | None = None):
         """
         Helper function to ensure key exists in dict and the value is the correct type
         
@@ -420,6 +329,7 @@ class CustomTransducer:
             expected_type (type): expected type of param_dict[key].
             param_dict (dict): dict containing values.
             optional (bool): Ignores missing key error if True.
+            list_type (type): Expected type of entries if param_dict[key] is a list.
         
         Returns:
             val: value of param_dict[<key>]
@@ -427,11 +337,17 @@ class CustomTransducer:
         Raises:
             ValueError: If key does not exist in param_dict or it's value type does not match expected_type
         """
-        
+        parent_key_text = ''
+        if parent_key:
+            parent_key_text = parent_key + '.'
+            
         # Check key exists
         if key not in param_dict.keys():
             if not optional:
-                raise ValueError(f"The following parameter is missing from the custom transducer yaml: {key}")
+                raise YAMLParameterError(
+                    f"The following parameter is missing from the custom transducer yaml: {parent_key_text}{key}",
+                    full_key=f"{parent_key_text}{key}"
+                )
             else:
                 return
         
@@ -439,7 +355,20 @@ class CustomTransducer:
         val = param_dict[key]
         if not isinstance(val, expected_type):
             type_name = expected_type.__name__ if isinstance(expected_type, type) else " or ".join(t.__name__ for t in expected_type)
-            raise ValueError(f"{key} was not specified as {type_name} in custom transducer yaml file")
+            raise YAMLParameterError(
+                f"{parent_key_text}{key} was not specified as {type_name} in custom transducer yaml file",
+                full_key=f"{parent_key_text}{key}"
+            )
+        
+        # Check types inside list
+        if list_type is not None and isinstance(val, list):
+            type_name = list_type.__name__ if isinstance(list_type, type) else " or ".join(t.__name__ for t in list_type)
+            for i, item in enumerate(val):
+                if not isinstance(item, list_type):
+                    raise YAMLParameterError(
+                        f"{parent_key_text}{key}[{i}] ({item}) was not specified as {type_name} in custom transducer yaml file",
+                        full_key=f"{parent_key_text}{key}[{i}]"
+                    )
         
         # Return a copy for mutable types to prevent accidental mutation of the original yaml data
         if isinstance(val, (list, dict)):
@@ -470,9 +399,15 @@ class CustomTransducer:
         
         # Check value is positive
         if allow_zero and val < 0:
-                raise ValueError(f"{key} ({val} {unit}) must be >= 0 {unit}")
+            raise YAMLParameterError(
+                f"{key} ({val} {unit}) must be >= 0 {unit}",
+                full_key=f"{key}"
+            )
         elif not allow_zero and val <= 0:
-                raise ValueError(f"{key} ({val} {unit}) must be > 0")
+            raise YAMLParameterError(
+                f"{key} ({val} {unit}) must be > 0",
+                full_key=f"{key}"
+            )
         
         # Ensure value is float if that is expected type
         result = float(val) if expected_type is not int else val
@@ -483,12 +418,7 @@ class CustomTransducer:
     
     def _validate_numeric_list_dict( self, param_dict: dict, num_elements: int | None = None, context_name: str = "parameter", allow_negative: bool = True) -> None:
         """
-        Validates that all entries in a dict of lists are numeric and match the expected length.
-
-        Iterates over each key-value pair in param_dict, confirming that every list has
-        exactly num_elements entries and that each entry is an int or float. All invalid
-        entries are collected before raising, so the error message reports every problem
-        at once rather than stopping at the first.
+        Validates that all lists match the expected length and contain valid values.
 
         Args:
             param_dict (dict): Dictionary mapping parameter names to lists of values.
@@ -498,10 +428,8 @@ class CustomTransducer:
             allow_negative (bool): Set to False if element values should be positive
 
         Raises:
-            ValueError: If any list length does not match num_elements, or if any entry
-                        is not an int or float. Length mismatches are raised immediately
-                        on the offending key; type errors are collected and raised together
-                        after all lists are checked.
+            ValueError: If any list length does not match num_elements or contains
+            invalid negative values.
         """
     
         # Collect all invalid entries before raising so the user sees every problem at once
@@ -510,11 +438,10 @@ class CustomTransducer:
             if num_elements is not None and len(values) != num_elements:
                 raise ValueError(f"Number of entries in {key} ({len(values)}) does not match num_elements ({num_elements})")
             
-            for i, val in enumerate(values):
-                if not isinstance(val, (int, float)):
-                    bad_entries.append(f"   {key}[{i}]: {val!r} (expected numeric)")
-                elif not allow_negative and val < 0:
-                    bad_entries.append(f"   {key}[{i}]: {val!r} (negative values not allowed)")
+            if not allow_negative:
+                for i, val in enumerate(values):
+                    if val < 0:
+                        bad_entries.append(f"   {key}[{i}]: {val!r} (negative values not allowed)")
         
         if bad_entries:
             raise ValueError(f"{context_name} contains invalid entries:\n" + "\n".join(bad_entries))
@@ -531,12 +458,19 @@ class CustomTransducer:
             ValueError: If max_value is less than min_value
         """
         if len(limits) != 2:
-            raise ValueError(f"{context_name} limits must have exactly 2 entries [min, max], got {len(limits)}")
+            raise YAMLParameterError(
+                f"{context_name} limits must have exactly 2 entries [min, max], got {len(limits)}",
+                full_key=context_name
+            )
+        
 
         min_limit = limits[0]
         max_limit = limits[1]
         if min_limit > max_limit:
-            raise ValueError(f"{context_name}: Min value ({min_limit}) must be less than max value ({max_limit})")
+            raise YAMLParameterError(
+                f"{context_name}: Min value ({min_limit}) must be less than max value ({max_limit})",
+                full_key=context_name
+            )
     
     # ---------------------------------------------------------------------
     # FIELD VALIDATORS
@@ -559,20 +493,23 @@ class CustomTransducer:
         tx_name = self._get_param('name', str, tx_params)
 
         if not re.match(r'^[a-zA-Z]', tx_name):
-            raise ValueError("Transducer name must begin with a letter")
+            raise YAMLParameterError("Transducer name must begin with a letter", 'name')
         
         if re.search(r'\s', tx_name):
-            raise ValueError("Transducer name cannot contain spaces")
+            raise YAMLParameterError("Transducer name cannot contain spaces", 'name')
         
         special_chars = set(re.findall(r'[^a-zA-Z0-9_-]', tx_name))
         if special_chars:
-            raise ValueError(f"Transducer name cannot contain special characters ({', '.join(special_chars)})")
+            raise YAMLParameterError(f"Transducer name cannot contain special characters ({', '.join(special_chars)})", 'name')
         
         self.name = tx_name
         self.class_name = get_class_name(self.name)
         
         if self.class_name in DEFAULT_TXS:
-            raise ValueError('You cannot overwrite default transducers, please enter a different name for your transducer')
+            raise YAMLParameterError(
+                'You cannot overwrite default transducers, please enter a different name for your transducer',
+                full_key='name'
+            )
             
         print(f"Transducer Name: {tx_name}\nTransducer Class Name: {self.class_name}")
     
@@ -599,7 +536,10 @@ class CustomTransducer:
         tx_geometry_type = self._get_param('geometry_type', str, tx_params)
         if tx_geometry_type not in TX_GEOMETRIES.keys():
             valid_geoms_str = "\n".join(TX_GEOMETRIES.keys())
-            raise ValueError(f"{tx_geometry_type} is not a valid geometry choice. Expecting one of the following:\n\n{valid_geoms_str}")
+            raise YAMLParameterError(
+                f"{tx_geometry_type} is not a valid geometry choice. Expecting one of the following:\n\n{valid_geoms_str}",
+                full_key='geometry_type'
+            )
         self.geometry_type = tx_geometry_type
         print(f"Transducer Geometry: {tx_geometry_type}")
         
@@ -628,20 +568,24 @@ class CustomTransducer:
             self.frequencies (list): Validated transducer frequencies
         """
         
-        tx_frequencies = self._get_param('frequencies', list, tx_params)
+        tx_frequencies = self._get_param('frequencies', list, tx_params, list_type=(int,float))
         print("Transducer Frequencies:")
-        for freq in tx_frequencies:
+        for i,freq in enumerate(tx_frequencies):
             
             # Ensure no decimal points in frequency
-            if not isinstance(freq,(int,float)):
-                raise ValueError(f"frequency entry ({freq}) was not specified as an int or float in custom transducer yaml file")
             if not freq.is_integer():
-                raise ValueError(f"Invalid specified frequency ({freq} Hz), frequency must be an integer value")
+                raise YAMLParameterError(
+                    f"Invalid specified frequency ({freq} Hz), frequency must be an integer value",
+                    full_key=f'frequencies[{i}]'
+                )
             
             # Ensure frequency is at valid step in frequency range
             int_freq = int(freq)
             if int_freq not in VALID_FREQUENCIES:
-                raise ValueError(f"Invalid specified frequency ({int_freq} Hz), frequency must be at a 5kHz interval value within the 200-1000 kHz range")
+                raise YAMLParameterError(
+                    f"Invalid specified frequency ({int_freq} Hz), frequency must be at a 5kHz interval value within the 200-1000 kHz range",
+                    full_key=f'frequencies[{i}]'
+                )
 
             # Add valid frequency to list
             self.frequencies.append(int_freq)
@@ -680,7 +624,10 @@ class CustomTransducer:
         valid_tx_coordinate_systems = TX_GEOMETRIES[self.geometry_type]['coordinate_system']
         if tx_coordinate_system not in valid_tx_coordinate_systems:
             valid_coord_systems_str = "\n".join(valid_tx_coordinate_systems)
-            raise ValueError(f"{tx_coordinate_system} is not a valid coordinate system choice. Expecting one of the following:\n\n{valid_coord_systems_str}")
+            raise YAMLParameterError(
+                f"{tx_coordinate_system} is not a valid coordinate system choice. Expecting one of the following:\n\n{valid_coord_systems_str}",
+                full_key='element_coordinate_system'
+            )
         
         # Assign properties
         self.coordinate_system = tx_coordinate_system
@@ -708,7 +655,7 @@ class CustomTransducer:
         
         tx_elements = self._get_param('elements', dict, tx_params)
         for dim_var in self.coordinate_vars:
-            _ = self._get_param(dim_var, list, tx_elements)
+            _ = self._get_param(dim_var, list, tx_elements, parent_key='elements', list_type=(int,float))
         self._validate_numeric_list_dict(tx_elements,self.num_elements,'elements')
         
         self.elements = tx_elements
@@ -734,8 +681,8 @@ class CustomTransducer:
         
         tx_rings = self._get_param('annular', dict, tx_params)
         tx_rings_new = {}
-        inner_diameters = self._get_param('inner_ring_diameters', list, tx_rings)
-        outer_diameters = self._get_param('outer_ring_diameters', list, tx_rings)
+        inner_diameters = self._get_param('inner_ring_diameters', list, tx_rings, parent_key='annular', list_type=(int,float))
+        outer_diameters = self._get_param('outer_ring_diameters', list, tx_rings, parent_key='annular', list_type=(int,float))
         self._validate_numeric_list_dict(tx_rings,self.num_elements,'annular',allow_negative=False)
         
         # Check outer ring is always bigger than inner ring
@@ -744,7 +691,10 @@ class CustomTransducer:
             if outer <= inner:
                 bad_entries.append(f"inner_ring_diameters[{i}] ({inner}) > outer_ring_diameters[{i}] ({outer})")
         if bad_entries:
-            raise ValueError(f"inner_ring_diameters cannot be bigger than corresponding outer_ring_diameter:\n{bad_entries}")
+            raise YAMLParameterError(
+                f"inner_ring_diameters cannot be bigger than corresponding outer_ring_diameter:\n{bad_entries}",
+                full_key='annular'
+            )
             
         # Rename keys
         tx_rings_new["inner_diameters"] = inner_diameters
@@ -782,16 +732,16 @@ class CustomTransducer:
         
         # Only validate axes that the geometry actually supports
         if 'x' in self.steering_axes:
-            tx_xsteering = self._get_param('x', list, tx_steering)
-            self._validate_limits(tx_xsteering,"X Steering")
+            tx_xsteering = self._get_param('x', list, tx_steering, parent_key='steering', list_type=(int,float))
+            self._validate_limits(tx_xsteering,"steering.x")
             print(f"Transducer X Steering Limits (m): {tx_xsteering}")
         if 'y' in self.steering_axes:
-            tx_ysteering = self._get_param('y', list, tx_steering)
-            self._validate_limits(tx_ysteering,"Y Steering")
+            tx_ysteering = self._get_param('y', list, tx_steering, parent_key='steering', list_type=(int,float))
+            self._validate_limits(tx_ysteering,"steering.y")
             print(f"Transducer Y Steering Limits (m): {tx_ysteering}")
         if 'z' in self.steering_axes:
-            tx_zsteering = self._get_param('z', list, tx_steering)
-            self._validate_limits(tx_zsteering,"Z Steering")
+            tx_zsteering = self._get_param('z', list, tx_steering, parent_key='steering', list_type=(int,float))
+            self._validate_limits(tx_zsteering,"steering.z")
             print(f"Transducer Z Steering Limits (m): {tx_zsteering}")
         
         self._validate_numeric_list_dict(tx_steering,2,'steering')
@@ -800,7 +750,10 @@ class CustomTransducer:
         if 'z' in self.steering_axes:
             abs_zsteering_min = abs(tx_zsteering[0])
             if abs_zsteering_min > self.focal_length:
-                raise ValueError(f"Z minimum steering limit ({abs_zsteering_min}) exceeds focal length distance ({self.focal_length})")
+                raise YAMLParameterError(
+                    f"Z minimum steering limit ({abs_zsteering_min}) exceeds focal length distance ({self.focal_length})",
+                    full_key='steering.z[0]'
+                )
         
         self.xsteering_limits = tx_xsteering
         self.ysteering_limits = tx_ysteering
@@ -835,20 +788,29 @@ class CustomTransducer:
                 
                 # Validate PlanTUS frequency
                 if not isinstance(planTUS_key,(int,float)):
-                    raise ValueError(f"Frequencies under PlanTUS should be int or float, you put {planTUS_key} ({type(planTUS_key)})")
+                    raise YAMLParameterError(
+                        f"Frequencies under PlanTUS should be int or float, you put {planTUS_key} ({type(planTUS_key)})",
+                        full_key=f'PlanTUS.{planTUS_key}'
+                    )
                 
                 planTUS_freq = int(planTUS_key)
                 print(f"    {planTUS_freq} Hz")
                 
                 # PlanTUS entries must correspond to a frequency already declared for this transducer
                 if planTUS_freq not in tx_freqs:
-                    raise ValueError(f"PlanTUS frequency ({planTUS_freq} Hz) is not listed as one of the transducer frequencies")
+                    raise YAMLParameterError(
+                        f"PlanTUS frequency ({planTUS_freq} Hz) is not listed as one of the transducer frequencies",
+                        full_key=f'PlanTUS.{planTUS_key}'
+                    )
                 
                 # Validate elements in PlanTUS frequency
                 if planTUS_value is None:
-                    raise ValueError(f"FocalDistanceList and FHMLList are missing from {planTUS_key} parameter under PlanTUS parameter")
-                tx_planTUS_focal_dists = self._get_param('FocalDistanceList', list, planTUS_value)
-                tx_planTUS_focal_FHMLs = self._get_param('FHMLList', list, planTUS_value)
+                    raise YAMLParameterError(
+                        f"FocalDistanceList and FHMLList are missing from {planTUS_key} parameter under PlanTUS parameter",
+                        full_key=f'PlanTUS.{planTUS_key}'
+                    )
+                tx_planTUS_focal_dists = self._get_param('FocalDistanceList', list, planTUS_value, list_type=(int,float), parent_key=f'PlanTUS.{planTUS_key}')
+                tx_planTUS_focal_FHMLs = self._get_param('FHMLList', list, planTUS_value, list_type=(int,float), parent_key=f'PlanTUS.{planTUS_key}')
                 self._validate_numeric_list_dict(planTUS_value,None,f"PlanTUS {planTUS_key}",allow_negative=False)
                 
                 # Element Num check
