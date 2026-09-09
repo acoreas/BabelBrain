@@ -1267,8 +1267,96 @@ class CustomTransducer:
         
         return sim_conditions._Tx, u2.T, grid_info
 
-    def _run_rayleigh_PlanTUS(self,freq,plot_FHML=False):
-        
+    def _make_legend_interactive(self, fig, ax, plot_lines, plot_data):
+        legend = ax.legend()
+        legend_lines = legend.get_lines()
+        legend_texts = legend.get_texts()
+
+        selected_line = {'index': None}
+
+        # FHML markers, hidden until a single line is selected
+        lower_line = ax.axvline(
+            x=0,
+            linestyle='--',
+            color='blue',
+            label='Lower',
+            visible=False
+        )
+        upper_line = ax.axvline(
+            x=0,
+            linestyle='--',
+            color='blue',
+            label='Upper',
+            visible=False
+        )
+        half_max_line = ax.axhline(
+            y=0,
+            linestyle='--',
+            color='orange',
+            label='Half Max',
+            visible=False
+        )
+
+        for legend_line, legend_text in zip(legend_lines, legend_texts):
+            legend_line.set_picker(True)
+            legend_line.set_pickradius(5)
+            legend_text.set_picker(True)
+
+        def on_pick(event):
+            if event.artist in legend_lines:
+                selected_idx = legend_lines.index(event.artist)
+            elif event.artist in legend_texts:
+                selected_idx = legend_texts.index(event.artist)
+            else:
+                return
+
+            # Clicking the selected line again restores all lines
+            if selected_line['index'] == selected_idx:
+                selected_line['index'] = None
+
+                for line, legend_line, legend_text in zip(
+                    plot_lines,
+                    legend_lines,
+                    legend_texts
+                ):
+                    line.set_visible(True)
+                    legend_line.set_alpha(1.0)
+                    legend_text.set_alpha(1.0)
+
+                lower_line.set_visible(False)
+                upper_line.set_visible(False)
+                half_max_line.set_visible(False)
+
+            # Otherwise only show the selected line
+            else:
+                selected_line['index'] = selected_idx
+
+                for i, (line, legend_line, legend_text) in enumerate(zip(
+                    plot_lines,
+                    legend_lines,
+                    legend_texts
+                )):
+                    visible = i == selected_idx
+                    line.set_visible(visible)
+                    legend_line.set_alpha(1.0 if visible else 0.3)
+                    legend_text.set_alpha(1.0 if visible else 0.3)
+
+                data = plot_data[selected_idx]
+
+                lower_line.set_xdata([data['left'], data['left']])
+                upper_line.set_xdata([data['right'], data['right']])
+                half_max_line.set_ydata([data['half_max'], data['half_max']])
+
+                lower_line.set_visible(True)
+                upper_line.set_visible(True)
+                half_max_line.set_visible(True)
+
+            fig.canvas.draw_idle()
+
+        fig.canvas.mpl_connect('pick_event', on_pick)
+
+    def _run_rayleigh_PlanTUS(self,freq, normalized_pressure=True, plot_FHML=False):
+            
         args = {}
         args['Aperture'] = self.aperture_size
         args['Frequency'] = freq
@@ -1340,7 +1428,15 @@ class CustomTransducer:
 
         focal_dists = []
         FHMLs = []
-        for focal_dist in self.PlanTUS[freq]['FocalDistanceListInitial']:
+
+        if plot_FHML:
+            fig, ax = plt.subplots()
+            plot_lines = []
+            plot_data = []
+
+        for focal_idx, focal_dist in enumerate(
+            self.PlanTUS[freq]['FocalDistanceListInitial']
+        ):
             new_zsteering = focal_dist/1e3 - self.focal_length
             new_target = self.focal_length+new_zsteering
             
@@ -1351,7 +1447,7 @@ class CustomTransducer:
             ])
             
             # ------------------------------------------------------------------ #
-            #  Steering / phase computation                                        #
+            #  Steering / phase computation                                      #
             # ------------------------------------------------------------------ #
             if self.geometry_type in ['flat_annular_array','focused_annular_array']:
                 # Forward-propagate each element's sub-panels to the focal point and
@@ -1446,6 +1542,8 @@ class CustomTransducer:
             
             u2_1D = abs(u2)
             u2_1D *= Material['Water'][0]*Material['Water'][1] # Convert to pressure
+            if normalized_pressure:
+                u2_1D /= max(u2_1D)
 
             # ------------------------------------------------------------------ #
             #  Calculate/Store FHML                                              #
@@ -1474,17 +1572,37 @@ class CustomTransducer:
             # ------------------------------------------------------------------ #
             #  Plot FHML                                                         #
             # ------------------------------------------------------------------ #
-            if plot_FHML:
-                num_plots = len(self.PlanTUS[freq]['FocalDistanceListInitial'])
-                if len(focal_dists) in [1,num_plots//2,num_plots]:
-                    fig, ax = plt.subplots()
-                    ax.plot(zfield, u2_1D)
-                    ax.axvline(x=zfield[left], linestyle='--', color='blue', label='Lower')
-                    ax.axvline(x=zfield[right], linestyle='--', color='blue', label='Upper')
-                    ax.axhline(y=half_max, linestyle='--', color='orange', label='Half Max')
-                    ax.legend()
+            if plot_FHML and (focal_idx % 4 == 0 or np.isclose(new_target, self.focal_length)): # Capture every 4 line plots as well as focal point plot
+                line, = ax.plot(
+                    zfield*1e3,
+                    u2_1D,
+                    label=f'{focal_dist:.2f} mm'
+                )
+                plot_lines.append(line)
 
-                    fig.show()
+                plot_data.append({
+                    'left': zfield[left]*1e3,
+                    'right': zfield[right]*1e3,
+                    'half_max': half_max,
+                })
+
+        if plot_FHML:
+            ax.set_xlabel('Axial Distance (mm)')
+            if normalized_pressure:
+                ax.set_ylabel('Normalized Pressure')
+            else:
+                ax.set_ylabel('Pressure (Pa)')
+            ax.set_title(f'Rayleigh Pressure Profiles - {freq/1e3:g} kHz')
+
+            if plot_lines:
+                self._make_legend_interactive(
+                    fig,
+                    ax,
+                    plot_lines,
+                    plot_data
+                )
+
+            fig.show()
 
         return focal_dists, FHMLs
 
