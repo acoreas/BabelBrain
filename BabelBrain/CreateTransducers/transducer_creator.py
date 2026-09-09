@@ -10,6 +10,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 from BabelViscoFDTD.tools.RayleighAndBHTE import (
     ForwardSimple,
     InitCuda,
@@ -18,9 +20,10 @@ from BabelViscoFDTD.tools.RayleighAndBHTE import (
     SpeedofSoundWater,
 )
 from jinja2 import Environment, FileSystemLoader
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from CreateTransducers.transducer_verification_dialog import (
+    PlotWidget,
     TransducerVerificationDialog,
 )
 from RunServerCalculation import RAYLEIGH_TEST, RunServerCalculation
@@ -1430,7 +1433,9 @@ class CustomTransducer:
         FHMLs = []
 
         if plot_FHML:
-            fig, ax = plt.subplots()
+            fig = Figure(tight_layout=True)
+            canvas = FigureCanvasQTAgg(fig)
+            ax = fig.add_subplot(111)
             plot_lines = []
             plot_data = []
 
@@ -1602,7 +1607,14 @@ class CustomTransducer:
                     plot_data
                 )
 
-            fig.show()
+            dialog = QDialog()
+            dialog.setWindowTitle(f'Rayleigh Pressure Profiles - {freq/1e3:g} kHz')
+            dialog.resize(800, 500)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(PlotWidget(canvas))
+            canvas.draw()
+            dialog.exec()
 
         return focal_dists, FHMLs
 
