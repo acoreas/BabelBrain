@@ -1,21 +1,30 @@
 import importlib
 import logging
 import os
-from pathlib import Path
 import re
 import shutil
 import sys
 import tempfile
+from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+import matplotlib.pyplot as plt
 import numpy as np
-from PySide6.QtWidgets import QMessageBox, QDialog
 import yaml
+from BabelViscoFDTD.tools.RayleighAndBHTE import (
+    ForwardSimple,
+    InitCuda,
+    InitMetal,
+    InitOpenCL,
+    SpeedofSoundWater,
+)
+from jinja2 import Environment, FileSystemLoader
+from PySide6.QtWidgets import QDialog, QMessageBox
 
-from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater, InitCuda, InitOpenCL, InitMetal
-from CreateTransducers.transducer_verification_dialog import TransducerVerificationDialog
+from CreateTransducers.transducer_verification_dialog import (
+    TransducerVerificationDialog,
+)
+from RunServerCalculation import RAYLEIGH_TEST, RunServerCalculation
 from Utils.paths import resource_path
-from RunServerCalculation import RunServerCalculation, RAYLEIGH_TEST
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +85,15 @@ VALID_FREQUENCIES = range(200000,1005000,5000)
 # =============================================================================
 
 def get_class_name(name):
-        
-        # Convert dashes between numbers to underscores.
-        name = re.sub(r"(?<=\d)-(?=\d)", "_", name)
+    # Convert dashes between numbers to underscores.
+    name = re.sub(r"(?<=\d)-(?=\d)", "_", name)
 
-        # Split on underscores/dashes unless they are between two numbers.
-        parts = re.split(r"(?<!\d)[_-]+|[_-]+(?!\d)", name)
-    
-        pascalcase_name = "".join(part[:1].upper() + part[1:] for part in parts if part)
-        
-        return pascalcase_name
+    # Split on underscores/dashes unless they are between two numbers.
+    parts = re.split(r"(?<!\d)[_-]+|[_-]+(?!\d)", name)
+
+    pascalcase_name = "".join(part[:1].upper() + part[1:] for part in parts if part)
+
+    return pascalcase_name
 
 # =============================================================================
 # Dialogs / Message Boxes / Widgets
@@ -128,6 +136,7 @@ class CustomTransducer:
         self.focal_length: float | None = None
         self.geometry_type: str | None = None
         self.gpu = gpu
+        self.is_gpu_initialized = False
         self.is_annular: bool = False
         self.is_spherical: bool = False
         self.is_steerable: bool = False
@@ -778,11 +787,12 @@ class CustomTransducer:
         # PlanTUS is optional; skip validation entirely if the key is absent
         tx_planTUS = self._get_param('PlanTUS', dict, tx_params, optional=True)
         tx_planTUS_new = {}
-        
+
+        # Work from a copy so we can remove matched frequencies and detect any omissions at the end
+        tx_freqs = self.frequencies.copy()
+
         if tx_planTUS is not None:
             print("PlanTUS Parameters")
-            # Work from a copy so we can remove matched frequencies and detect any omissions at the end
-            tx_freqs = self.frequencies.copy()
 
             for planTUS_key, planTUS_value in tx_planTUS.items():
                 
@@ -832,9 +842,25 @@ class CustomTransducer:
             if len(tx_freqs) > 0:
                 missing_details = ", ".join(f"{freq} Hz" for freq in tx_freqs)
                 raise ValueError(f"PlanTUS parameter is missing details for following frequencies: {missing_details}")
-        
-            self.PlanTUS = tx_planTUS_new
-    
+        else:
+            for freq in tx_freqs:
+                tx_planTUS_focal_dists_initial = []
+
+                # Determine number of points to measure
+                if self.zsteering_limits:
+                    start = (self.focal_length + self.zsteering_limits[0]) * 1e3
+                    stop = (self.focal_length + self.zsteering_limits[1]) * 1e3
+                    tx_planTUS_focal_dists_initial = range(int(start),int(stop),2)
+                else:
+                    tx_planTUS_focal_dists_initial = [self.focal_length]
+
+                tx_planTUS_new[freq] = {}
+                tx_planTUS_new[freq]['FocalDistanceListInitial'] = list(tx_planTUS_focal_dists_initial)
+                tx_planTUS_new[freq]['FocalDistanceList'] = []
+                tx_planTUS_new[freq]['FHMLs'] = []
+
+        self.PlanTUS = tx_planTUS_new
+
     # =============================================================================
     # TX FILE CREATION
     # =============================================================================
@@ -1079,6 +1105,12 @@ class CustomTransducer:
         if isinstance(value, (list, tuple, set)):
             return [self._make_yaml_safe(v) for v in value]
 
+        if isinstance(value, np.ndarray):
+            return [self._make_yaml_safe(v) for v in value.tolist()]
+
+        if isinstance(value, np.generic):
+            return value.item()
+
         return value
 
     # =============================================================================
@@ -1086,7 +1118,36 @@ class CustomTransducer:
     # =============================================================================
     
     def _validate_tx(self):
-        
+
+        sys.path.insert(0, str(CUSTOM_TRANSDUCERS_FOLDER))
+        self.TxIntegration = importlib.import_module(f"Babel_{self.class_name}.BabelIntegration{self.class_name}")
+
+        # Acoustic Water Sims for PlanTUS
+        if not self.PlanTUS[self.frequencies[0]]['FHMLs']:
+            if self.geometry_type == 'flat_annular_array':
+                # FHML calculation is wonky for this transducer type
+                pass 
+            else:
+                for freq in self.PlanTUS:
+                    focal_dists_per_freq, FHMLs_per_freq = self._run_rayleigh_PlanTUS(freq,plot_FHML=False)
+                    self.PlanTUS[freq]['FocalDistanceList'] = focal_dists_per_freq
+                    self.PlanTUS[freq]['FHMLs'] = FHMLs_per_freq
+                    del self.PlanTUS[freq]['FocalDistanceListInitial']
+                    
+                # Update default file
+                with open(self.tx_default_yaml, "r") as f:
+                    data = yaml.safe_load(f)
+
+                data["PlanTUS"]= self.PlanTUS
+
+                with open(self.tx_default_yaml, "w") as f:
+                    yaml.safe_dump(
+                        self._make_yaml_safe(data),
+                        f,
+                        default_flow_style=False,
+                        sort_keys=False,
+                    )
+
         # Acoustics Water Sim
         tx_data, acoustics_water_plot, grid_info = self._run_rayleigh()
         acoustics_water_plot = np.abs(acoustics_water_plot)
@@ -1116,9 +1177,6 @@ class CustomTransducer:
         
     
     def _run_rayleigh(self):
-        sys.path.insert(0, str(CUSTOM_TRANSDUCERS_FOLDER))
-
-        TxIntegration = importlib.import_module(f"Babel_{self.class_name}.BabelIntegration{self.class_name}")
         
         args = {}
         args['Aperture'] = self.aperture_size
@@ -1142,7 +1200,7 @@ class CustomTransducer:
             args['InDiameters'] = np.array(self.rings['inner_diameters'])
             args['OutDiameters'] = np.array(self.rings['outer_diameters'])
             
-        sim_conditions = TxIntegration.SimulationConditions(**args)
+        sim_conditions = self.TxIntegration.SimulationConditions(**args)
         
         if self.geometry_type in ['focused_array']:
             sim_conditions.GenTransducerGeom()
@@ -1188,30 +1246,15 @@ class CustomTransducer:
             )
         ).astype(np.float32)
         
-        
-        if self.computing_backend in 'Server':
-            remote_calc = RunServerCalculation(
-                step=RAYLEIGH_TEST,
-                server=self.remote_server,
-                standalone_args={
-                    'cwvnb_extlay': cwvnb_extlay,
-                    'center': sim_conditions._Tx['center'].astype(np.float32),
-                    'ds': sim_conditions._Tx['ds'].astype(np.float32),
-                    'u0': u0,
-                    'rf': rf,
-                },
-            )
-            u2=remote_calc.run()
-        else:
-            self.initialize_gpu()    
-            u2=ForwardSimple(cwvnb_extlay,
-                             sim_conditions._Tx['center'].astype(np.float32),
-                             sim_conditions._Tx['ds'].astype(np.float32),
-                             u0,
-                             rf,
-                             deviceMetal="M1")
+        u2 = self._run_forward_simple(
+            cwvnb_extlay,
+            sim_conditions._Tx['center'].astype(np.float32),
+            sim_conditions._Tx['ds'].astype(np.float32),
+            u0,
+            rf
+        )
         u2 *= Material['Water'][0]*Material['Water'][1]
-        u2=np.reshape(u2,xp.shape)
+        u2 = np.reshape(u2,xp.shape)
         
         grid_info = {}
         grid_info['xfmin'] = xfmin
@@ -1223,11 +1266,267 @@ class CustomTransducer:
         grid_info['spatial_step'] = spatial_step
         
         return sim_conditions._Tx, u2.T, grid_info
-    
-    def initialize_gpu(self):
-        if self.computing_backend=='CUDA':
-            InitCuda(self.gpu)
-        elif self.computing_backend=='OpenCL':
-            InitOpenCL(self.gpu)
-        elif self.computing_backend=='Metal':
-            InitMetal(self.gpu)
+
+    def _run_rayleigh_PlanTUS(self,freq,plot_FHML=False):
+        
+        args = {}
+        args['Aperture'] = self.aperture_size
+        args['Frequency'] = freq
+        args['FocalLength'] = self.focal_length
+        if 'x' in self.steering_axes:
+            args['XSteering'] = 0.0
+        if 'y' in self.steering_axes:
+            args['YSteering'] = 0.0
+        if 'z' in self.steering_axes:
+            args['ZSteering'] = 0.0 # focal_dist/1e3 - self.focal_length
+        if len(self.steering_axes) == 3:
+            args['RotationZ'] = 0.0
+        if self.geometry_type in ['focused_array']:
+            args['DistanceConeToFocus'] = self.focal_length # - self.distance_outplane
+        if self.geometry_type in ['focused_array','flat_array_2D']:
+            args['elements'] = self.elements
+            args['num_elements'] = self.num_elements
+            args['element_size'] = self.element_size
+        if self.is_annular:
+            args['InDiameters'] = np.array(self.rings['inner_diameters'])
+            args['OutDiameters'] = np.array(self.rings['outer_diameters'])
+
+        sim_conditions = self.TxIntegration.SimulationConditions(**args)
+
+        if self.geometry_type in ['focused_array']:
+            sim_conditions.GenTransducerGeom()
+        elif self.geometry_type in ['flat_array_2D']:
+            sim_conditions._Tx = sim_conditions.GenTransducerGeom()
+        else:
+            sim_conditions._Tx = sim_conditions.GenTx()
+        print('Tx z  min',sim_conditions._Tx['center'][:,2].min())
+        
+        Material = {}
+        Material['Water'] = np.array([1000.0, SpeedofSoundWater(20.0), 0.0, 0.0, 0.0] )
+        sim_conditions._Material = Material
+        
+        cwvnb_extlay = np.array(
+            2*np.pi*sim_conditions._Frequency/Material['Water'][1]+1j*0
+        ).astype(np.complex64)
+        
+        spatial_step = SpeedofSoundWater(20.0) / sim_conditions._Frequency / 6
+        sim_conditions._SpatialStep = spatial_step
+        
+        #Limits of domain, in m
+        radius = self.aperture_size/2*1.5
+        depth = self.focal_length*2
+        xfmin=-radius
+        xfmax=radius
+        yfmin=-radius
+        yfmax=radius
+        zfmin=0
+        zfmax=max(depth,xfmax-xfmin)
+        xfield = np.linspace(xfmin, xfmax,int(np.ceil((xfmax - xfmin) / spatial_step) + 1) | 1)
+        yfield = np.linspace(yfmin, yfmax,int(np.ceil((yfmax - yfmin) / spatial_step) + 1) | 1)
+        zfield = np.linspace(zfmin, zfmax,int(np.ceil((zfmax - zfmin) / spatial_step) + 1) | 1)
+        sim_conditions._XDim = xfield
+        sim_conditions._YDim = yfield
+        sim_conditions._ZDim = zfield
+        
+        amp = 60e3/Material['Water'][0]/SpeedofSoundWater(20.0) #60 kPa
+        
+        sim_conditions._ZSourceLocation = 0
+
+        if self.geometry_type == 'simple_focused':
+            n_elems = 1
+        else:
+            n_elems = sim_conditions._Tx['NumberElems']
+        n_total = sim_conditions._Tx['center'].shape[0]
+
+        focal_dists = []
+        FHMLs = []
+        for focal_dist in self.PlanTUS[freq]['FocalDistanceListInitial']:
+            new_zsteering = focal_dist/1e3 - self.focal_length
+            new_target = self.focal_length+new_zsteering
+            
+            sim_conditions._FocalSpotLocation = np.array([
+                len(xfield)//2,
+                len(yfield)//2,
+                np.argmin(abs(sim_conditions._ZDim-new_target))
+            ])
+            
+            # ------------------------------------------------------------------ #
+            #  Steering / phase computation                                        #
+            # ------------------------------------------------------------------ #
+            if self.geometry_type in ['flat_annular_array','focused_annular_array']:
+                # Forward-propagate each element's sub-panels to the focal point and
+                # compute the conjugate phase needed to steer to that point.
+                center = np.zeros((1, 3), np.float32)
+                center[0,0] = sim_conditions._XDim[sim_conditions._FocalSpotLocation[0]]
+                center[0,1] = sim_conditions._YDim[sim_conditions._FocalSpotLocation[1]]
+                center[0,2] = sim_conditions._ZDim[sim_conditions._FocalSpotLocation[2]]
+                print('center', center)
+                print('Z location', sim_conditions._ZDim[sim_conditions._ZSourceLocation])
+
+                u2back = np.zeros(n_elems, np.complex64)
+                nBase = 0
+                print('Locations Tx and center', sim_conditions._Tx['center'].min(axis=0), center)
+                for n in range(n_elems):
+                    n_sub = sim_conditions._Tx['elemdims'][n][0]
+                    u0_sub = np.ones(n_sub, np.complex64)
+                    SelCenters = sim_conditions._Tx['center'][nBase:nBase+n_sub, :].astype(np.float32)
+                    SelDs      = sim_conditions._Tx['ds'][nBase:nBase+n_sub, :].astype(np.float32)
+                    u2back[n] = self._run_forward_simple(
+                        cwvnb_extlay,
+                        SelCenters,
+                        SelDs,
+                        u0_sub,
+                        center
+                    )[0]
+                    nBase += n_sub
+
+                AllPhi = np.zeros(n_elems)
+                for n in range(n_elems):
+                    AllPhi[n] = -np.angle(u2back[n])
+
+                print('Phase for array: [', np.rad2deg(AllPhi).tolist(), ']')
+
+                u0 = np.zeros((n_total, 1), np.complex64)
+                nBase = 0
+                for n in range(n_elems):
+                    n_sub = sim_conditions._Tx['elemdims'][n][0]
+                    u0[nBase:nBase+n_sub] = (amp * np.exp(1j*AllPhi[n])).astype(np.complex64)
+                    nBase += n_sub
+
+            elif self.geometry_type in ['focused_array','flat_array_2D']:
+                if not np.isclose(new_target, self.focal_length):
+                    # Propagate from the focal point to each element centre (inverse
+                    # direction), then conjugate to obtain the steering phase.
+                    ds = np.ones((1)) * sim_conditions._SpatialStep**2
+                    u0_focal = np.zeros((1), np.complex64)
+                    u0_focal[0] = 1+0j
+                    center = np.zeros((1, 3), np.float32)
+                    center[0,0] = sim_conditions._XDim[sim_conditions._FocalSpotLocation[0]]
+                    center[0,1] = sim_conditions._YDim[sim_conditions._FocalSpotLocation[1]]
+                    center[0,2] = sim_conditions._ZDim[sim_conditions._FocalSpotLocation[2]]
+                    print('center', center)
+
+                    u2back = self._run_forward_simple(
+                        cwvnb_extlay,
+                        center,
+                        ds.astype(np.float32),
+                        u0_focal,
+                        sim_conditions._Tx['elemcenter'].astype(np.float32)
+                    )
+                    u0 = np.zeros((n_total, 1), np.complex64)
+                    nBase = 0
+                    for n in range(n_elems):
+                        phi = np.angle(np.conjugate(u2back[n]))
+                        u0[nBase:nBase+sim_conditions._Tx['elemdims']] = (amp * np.exp(1j*phi)).astype(np.complex64)
+                        nBase += sim_conditions._Tx['elemdims']
+                else:
+                    u0 = (np.ones((n_total, 1), np.float32)
+                        + 1j*np.zeros((n_total, 1), np.float32)) * amp
+
+            elif self.geometry_type == 'simple_focused':  # 'none'
+                u0 = (np.ones((n_total, 1), np.float32)
+                    + 1j*np.zeros((n_total, 1), np.float32)) * amp
+
+            # ------------------------------------------------------------------ #
+            #  Perform Forward Rayleigh                                          #
+            # ------------------------------------------------------------------ #
+            rf = np.column_stack((
+                np.zeros_like(zfield),
+                np.zeros_like(zfield),
+                zfield
+            )).astype(np.float32)
+
+            u2 = self._run_forward_simple(
+                cwvnb_extlay,
+                sim_conditions._Tx['center'].astype(np.float32),
+                sim_conditions._Tx['ds'].astype(np.float32),
+                u0,
+                rf,
+            )
+            
+            u2_1D = abs(u2)
+            u2_1D *= Material['Water'][0]*Material['Water'][1] # Convert to pressure
+
+            # ------------------------------------------------------------------ #
+            #  Calculate/Store FHML                                              #
+            # ------------------------------------------------------------------ #
+            peak_idx = np.argmax(u2_1D)
+            half_max = u2_1D[peak_idx] / 2
+
+            # Find points above half maximum
+            above = u2_1D >= half_max
+
+            # Find contiguous region containing the peak
+            left = peak_idx
+            while left > 0 and above[left - 1]:
+                left -= 1
+
+            right = peak_idx
+            while right < len(u2_1D) - 1 and above[right + 1]:
+                right += 1
+
+            FHML = (zfield[right] - zfield[left])*1e3
+            focal_dist = zfield[peak_idx]*1e3
+            
+            focal_dists.append(np.round(focal_dist,2))
+            FHMLs.append(np.round(FHML,2))
+            
+            # ------------------------------------------------------------------ #
+            #  Plot FHML                                                         #
+            # ------------------------------------------------------------------ #
+            if plot_FHML:
+                num_plots = len(self.PlanTUS[freq]['FocalDistanceListInitial'])
+                if len(focal_dists) in [1,num_plots//2,num_plots]:
+                    fig, ax = plt.subplots()
+                    ax.plot(zfield, u2_1D)
+                    ax.axvline(x=zfield[left], linestyle='--', color='blue', label='Lower')
+                    ax.axvline(x=zfield[right], linestyle='--', color='blue', label='Upper')
+                    ax.axhline(y=half_max, linestyle='--', color='orange', label='Half Max')
+                    ax.legend()
+
+                    fig.show()
+
+        return focal_dists, FHMLs
+
+    def _initialize_gpu(self):
+        if not self.is_gpu_initialized:
+            if self.computing_backend=='CUDA':
+                InitCuda(self.gpu)
+            elif self.computing_backend=='OpenCL':
+                InitOpenCL(self.gpu)
+            elif self.computing_backend=='Metal':
+                InitMetal(self.gpu)
+            elif self.computing_backend=='Server':
+                pass
+            
+            self.is_gpu_initialized = True
+        else:
+            return
+
+    def _run_forward_simple(self,cwvnb_extlay,center,ds,u0,rf):
+        
+        if self.computing_backend in 'Server':
+            remote_calc = RunServerCalculation(
+                step=RAYLEIGH_TEST,
+                server=self.remote_server,
+                standalone_args={
+                    'cwvnb_extlay': cwvnb_extlay,
+                    'center': center,
+                    'ds': ds,
+                    'u0': u0,
+                    'rf': rf,
+                },
+            )
+            u2 = remote_calc.run()
+        else:
+            self._initialize_gpu()
+            u2 = ForwardSimple(
+                cwvnb_extlay,
+                center,
+                ds,
+                u0,
+                rf,
+                deviceMetal=self.gpu
+            )
+            
+        return u2
