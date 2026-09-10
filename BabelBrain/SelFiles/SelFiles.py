@@ -26,10 +26,8 @@ from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
 #     pyside6-uic form.ui -o ui_form.py, or
 #     pyside2-uic form.ui -o ui_form.py
 from .ui_form import Ui_Dialog
+from .transducer_list import TRANSDUCER_LIST
 from Utils.paths import resource_path
-
-
-ListTxSteering = ['H317', 'I12378', 'ATAC', 'R15148', 'R15646', 'IGT64_500', 'H301', 'DomeTx']
 
 
 def show_error_dialog(
@@ -171,6 +169,7 @@ class SelFiles(QDialog):
         )
         self.ui.SettingsToolButton.setMenu(self.ui.SettingsMenu)
 
+        self._PopulateTransducerComboBox()   # populate from transducer_list.py
         self.AddCustomTransducersToList()  # Add saved custom transducers
         # Apply the shared compact app style on top of the .ui layout.
         from GUIComponents.AppStyle import app_qss, apply_native_spinbox_style
@@ -250,6 +249,17 @@ class SelFiles(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         # disable (but not hide) close button
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
+
+    def _PopulateTransducerComboBox(self):
+        """Fill TransducerTypecomboBox from TRANSDUCER_LIST, storing each
+        entry's dict as item data so callers can query it via currentData()."""
+        combo = self.ui.TransducerTypecomboBox
+        combo.blockSignals(True)
+        combo.clear()
+        for tx in TRANSDUCER_LIST:
+            combo.addItem(tx['name'], tx)
+        combo.addItem(CUSTOM_TRANSDUCER_OPTION, None)
+        combo.blockSignals(False)
 
     def GetAllTransducers(self):
         """
@@ -536,8 +546,8 @@ class SelFiles(QDialog):
         return retValue
 
     def ValidateMultiPointProfile(self):
-        selTx = self.ui.TransducerTypecomboBox.currentText()
-        if selTx not in ListTxSteering:
+        tx_data = self.ui.TransducerTypecomboBox.currentData()
+        if tx_data is None or not tx_data.get('steering', False):
             return True
         if self.ui.MultiPointTypecomboBox.currentIndex() == 0:
             return True
@@ -557,8 +567,8 @@ class SelFiles(QDialog):
         if 'MultiPoint' not in profile:
             self.msgDetails = "YAML file missing 'MultiPoint' entry"
             return False
-        selTx = self.ui.TransducerTypecomboBox.currentText()
-        if selTx not in ListTxSteering:
+        tx_data = self.ui.TransducerTypecomboBox.currentData()
+        if tx_data is None or not tx_data.get('steering', False):
             self.msgDetails = "MultiPoint in profile can only be specified with a phased array-type transducer"
             return False
         if type(profile['MultiPoint']) is not list:
@@ -743,7 +753,8 @@ class SelFiles(QDialog):
 
             steering_enabled = (len(tx_params["steering_axes"]) == 3)
         else:
-            steering_enabled = current_tx in ListTxSteering
+            tx_data = self.ui.TransducerTypecomboBox.currentData()
+            steering_enabled = tx_data is not None and tx_data.get('steering', False)
 
         if not steering_enabled:
             self.ui.MultiPointTypecomboBox.setCurrentIndex(0)
