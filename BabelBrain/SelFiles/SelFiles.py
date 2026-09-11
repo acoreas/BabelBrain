@@ -275,6 +275,26 @@ class SelFiles(QDialog):
     def ManageCustomTransducers(self):
         CustomTransducerManagerDialog(self).exec()
 
+    def _custom_tx_item_data(self, tx_name: str) -> dict:
+        """Build the item-data dict for a custom transducer by reading its default.yaml."""
+        tx_default_yaml = CUSTOM_TRANSDUCERS_FOLDER / f"Babel_{tx_name}" / "default.yaml"
+        try:
+            with open(tx_default_yaml, "r") as f:
+                tx_params = yaml.safe_load(f)
+            geometry_type = tx_params.get('geometry_type', '')
+            steering_axes = tx_params.get('steering_axes', [])
+            steering = len(steering_axes) == 3
+        except Exception:
+            geometry_type = ''
+            steering = False
+        return {
+            'name': tx_name,
+            'module_name': tx_name,
+            'custom': True,
+            'steering': steering,
+            'transducer_type': geometry_type,
+        }
+
     def AddCustomTransducersToList(self):
         """
         Look for saved custom transducers in .config and add them to list of all transducers available in BabelBrain
@@ -304,8 +324,9 @@ class SelFiles(QDialog):
                     valid_custom_txs.add(item_text)
 
                     if existing_index < 0:
-                        insert_index = self.ui.TransducerTypecomboBox.count() - 1 # Accounting for 'Add Custom Transducer' option 
-                        self.ui.TransducerTypecomboBox.insertItem(insert_index, item_text)
+                        tx_data = self._custom_tx_item_data(tx_name)
+                        insert_index = self.ui.TransducerTypecomboBox.count() - 1 # Accounting for 'Add Custom Transducer' option
+                        self.ui.TransducerTypecomboBox.insertItem(insert_index, item_text, tx_data)
 
             # Delete custom transducers from list that no longer have files
             for index in range(self.ui.TransducerTypecomboBox.count() - 1, -1, -1):
@@ -742,19 +763,8 @@ class SelFiles(QDialog):
                 else:
                     self.ui.TransducerTypecomboBox.setCurrentIndex(self._previous_transducer_index)
 
-        current_tx = self.ui.TransducerTypecomboBox.currentText()
-
-        if current_tx.startswith(CUSTOM_TRANSDUCER_PREFIX):
-            tx_display_name = current_tx.removeprefix(CUSTOM_TRANSDUCER_PREFIX)
-            tx_default_yaml = (CUSTOM_TRANSDUCERS_FOLDER / f"Babel_{tx_display_name}" / "default.yaml")
-
-            with open(tx_default_yaml, "r") as file:
-                tx_params = yaml.safe_load(file)
-
-            steering_enabled = (len(tx_params["steering_axes"]) == 3)
-        else:
-            tx_data = self.ui.TransducerTypecomboBox.currentData()
-            steering_enabled = tx_data is not None and tx_data.get('steering', False)
+        tx_data = self.ui.TransducerTypecomboBox.currentData()
+        steering_enabled = tx_data is not None and tx_data.get('steering', False)
 
         if not steering_enabled:
             self.ui.MultiPointTypecomboBox.setCurrentIndex(0)

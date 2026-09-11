@@ -450,12 +450,10 @@ class BabelBrain(QWidget):
         # the client/server offload path (RunServerCalculation).
         self.Config['RemoteServer']=widget.GetSelectedServer() if ComputingBackend==5 else None
         
-        transducer_type = widget.ui.TransducerTypecomboBox.currentText()
-        self.Config['is_custom_tx'] = CUSTOM_TRANSDUCER_PREFIX in transducer_type
-        if self.Config['is_custom_tx']:
-            self.Config['TxSystem']=transducer_type.replace(CUSTOM_TRANSDUCER_PREFIX,"")
-        else:
-            self.Config['TxSystem']=transducer_type
+        self.Config['is_custom_tx'] = widget.ui.TransducerTypecomboBox.currentData()['custom']
+        self.Config['TxSystem']=widget.ui.TransducerTypecomboBox.currentData()['name']
+        self.Config['TxModuleName']=widget.ui.TransducerTypecomboBox.currentData()['module_name']
+        self.Config['TxType'] = widget.ui.TransducerTypecomboBox.currentData()['transducer_type']
 
         self.Config['simbnibs_path']=simbnibs_path
         self.Config['SimbNIBSType']=SimbNIBSType
@@ -683,32 +681,11 @@ class BabelBrain(QWidget):
         import BabelDatasetPreps as DataPreps
 
         from TranscranialModeling.BabelIntegrationBASE import GetSmallestSOS
-        if self.Config['TxSystem'] =='CTX_500':
-            idimport = 'CTX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_500':
-            idimport = 'CTX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_250':
-            idimport = 'CTX250'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_250_2ch':
-            idimport = 'CTX250_2ch'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='DPX_500':
-            idimport = 'DPX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='DPXPC_300':
-            idimport = 'DPXPC300'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='Single':
-            idimport = 'SingleTx'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='BSonix':
+        if self.Config['TxSystem'] =='BSonix':
             idimport = 'SingleTx'
             ibsub='BSonix'
         else:
-            idimport = self.Config['TxSystem']
+            idimport = self.Config['TxModuleName']
             ibsub=idimport
         try:
             if self.Config['is_custom_tx']:

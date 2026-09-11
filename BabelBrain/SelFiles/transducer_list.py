@@ -6,29 +6,33 @@ can be retrieved at runtime with combo.itemData(i) / combo.currentData().
 
 Fields
 ------
-name     : str  — identifier used throughout the codebase (must match Babel_<name> folders)
-steering : bool — True when the transducer supports multipoint / electronic steering
-transducer_type : bool — one of 5 transducer geometries (simple_focused,flat_annular_array,focused_annular_array,flat_array_2D,focused_array)
+name            : str  — identifier used throughout the codebase (must match Babel_<name> folders)
+module_name     : str  — Python module/folder identifier used for importlib (Babel_<module_name>);
+                         matches BabelBrain.py's idimport (e.g. CTX_500 → CTX500, Single → SingleTx)
+custom          : bool — True for user-created transducers, False for built-in ones
+steering        : bool — True when the transducer supports multipoint / electronic steering
+transducer_type : str  — one of 5 transducer geometries (simple_focused, flat_annular_array,
+                         focused_annular_array, flat_array_2D, focused_array)
 """
 
 TRANSDUCER_LIST = [
-    {'name': 'Single',      'steering': False,      'transducer_type': 'simple_focused'},
-    {'name': 'CTX_500',     'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'CTX_250',     'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'CTX_250_2ch', 'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'DPX_500',     'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'DPXPC_300',   'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'H317',        'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'H246',        'steering': False,      'transducer_type': 'flat_annular_array'},
-    {'name': 'BSonix',      'steering': False,      'transducer_type': 'simple_focused'},
-    {'name': 'REMOPD',      'steering': False,      'transducer_type': 'flat_array_2D'},
-    {'name': 'I12378',      'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'ATAC',        'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'R15148',      'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'R15287',      'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'R15473',      'steering': False,      'transducer_type': 'focused_annular_array'},
-    {'name': 'R15646',      'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'IGT64_500',   'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'H301',        'steering': True,       'transducer_type': 'focused_array'},
-    {'name': 'DomeTx',      'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'Single',      'module_name': 'SingleTx',      'custom': False,        'steering': False,      'transducer_type': 'simple_focused'},
+    {'name': 'CTX_500',     'module_name': 'CTX500',        'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'CTX_250',     'module_name': 'CTX250',        'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'CTX_250_2ch', 'module_name': 'CTX250_2ch',    'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'DPX_500',     'module_name': 'DPX500',        'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'DPXPC_300',   'module_name': 'DPXPC300',      'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'H317',        'module_name': 'H317',          'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'H246',        'module_name': 'H246',          'custom': False,        'steering': False,      'transducer_type': 'flat_annular_array'},
+    {'name': 'BSonix',      'module_name': 'BSonix',        'custom': False,        'steering': False,      'transducer_type': 'simple_focused'},
+    {'name': 'REMOPD',      'module_name': 'REMOPD',        'custom': False,        'steering': False,      'transducer_type': 'flat_array_2D'},
+    {'name': 'I12378',      'module_name': 'I12378',        'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'ATAC',        'module_name': 'ATAC',          'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'R15148',      'module_name': 'R15148',        'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'R15287',      'module_name': 'R15287',        'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'R15473',      'module_name': 'R15473',        'custom': False,        'steering': False,      'transducer_type': 'focused_annular_array'},
+    {'name': 'R15646',      'module_name': 'R15646',        'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'IGT64_500',   'module_name': 'IGT64_500',     'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'H301',        'module_name': 'H301',          'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
+    {'name': 'DomeTx',      'module_name': 'DomeTx',        'custom': False,        'steering': True,       'transducer_type': 'focused_array'},
 ]
