@@ -38,6 +38,19 @@ def computeREMOPDGeometry():
     TxPos=loadmat(os.path.join(os.path.dirname(os.path.realpath(__file__)),'REMOPD_ElementPosition.mat'))['REMOPD_ElementPosition']
     return TxPos
 
+def DeviceFrameSteering(XSteering, YSteering, flip_y=False):
+    '''Map GUI electronic steering into REMOPD simulation-domain axes.
+
+    Changed on remopd/feasible-traj (TW / Brainsight): hydrophone checks showed
+    GUI +Y is opposite the device/domain +Y. Sam asked that this swap apply
+    only when BabelBrain is launched from Brainsight, so Slicer and Localite
+    keep the identity map until a shared convention exists. Mechanical X/Y
+    are already domain coordinates and are not mapped here.
+    '''
+    if flip_y:
+        return XSteering, -YSteering
+    return XSteering, YSteering
+
 def GenerateSingleElem(FREQ=300e3,PPW=12.0):
     #60.08 PPW produces close to integer steps for both pitch and kerf
     
@@ -157,6 +170,7 @@ class RUN_SIM(RUN_SIM_BASE):
                                     ZSteering=self._ZSteering,
                                     RotationZ=self._RotationZ,
                                     TxSet=self._TxSet,
+                                    bFlipSteeringY=self._bFlipSteeringY,
                                     **kargs)
     def RunCases(self,
                     XSteering=0.0,
@@ -164,12 +178,15 @@ class RUN_SIM(RUN_SIM_BASE):
                     ZSteering=60.0e-3,
                     RotationZ=0.0,
                     TxSet='Total', #Total selects all the 256 elements, Sector1 the central 128 elements, and Sector2 the external 128
+                    bFlipSteeringY=False,
                     **kargs):
         self._RotationZ=RotationZ
         self._XSteering=XSteering
         self._YSteering=YSteering
         self._ZSteering=ZSteering
         self._TxSet=TxSet
+        # Popped here so BASE CreateSimObject does not see an unknown kwarg.
+        self._bFlipSteeringY=bFlipSteeringY
         
         return super().RunCases(**kargs)
         
@@ -183,6 +200,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
                  ZSteering=0.0,
                  RotationZ=0.0,
                  TxSet='Total', #Total selects all the 256 elements, Sector1 the central 128 elements, and Sector2 the external 128
+                 bFlipSteeringY=False,
                  **kargs):
         
         self._XSteering=XSteering
@@ -190,6 +208,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         self._ZSteering=ZSteering
         self._RotationZ=RotationZ
         self._TxSet=TxSet
+        self._bFlipSteeringY=bFlipSteeringY
         super().__init__(**kargs)
 
     def CreateSimConditions(self,**kargs):
@@ -198,6 +217,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
                                     ZSteering=self._ZSteering,
                                     RotationZ=self._RotationZ,
                                     TxSet=self._TxSet,
+                                    bFlipSteeringY=self._bFlipSteeringY,
                                     FocalLength=0.0,
                                     Aperture=APERTURE, # m, aperture of the Tx, used tof calculated cross section area entering the domain
                                     **kargs)
@@ -208,25 +228,25 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         affine=self._SkullMask.affine
         LocSpot=np.array(np.where(self._SkullMask.get_fdata(dtype=np.float32)==5.0)).flatten()
 
+
         for nt,st in enumerate(['VertDisplay','elemcenter']):
-            TxVert=self._SIM_SETTINGS._TxREMOPD[st].T.copy()
+            TxVert=self._SIM_SETTINGS._Tx[st].T.copy()
+            TxVert[2,:]-=self._SIM_SETTINGS._ZDim[self._SIM_SETTINGS._PMLThickness]
+            TxVert[2,:]=-TxVert[2,:]
             TxVert/=self._SIM_SETTINGS.SpatialStep
+            TxVert[2,:]+=self._SkullMask.shape[2]-1
             TxVert=np.vstack([TxVert,np.ones((1,TxVert.shape[1]))])
 
-            TxVert[2,:]=-TxVert[2,:]
-            TxVert[0,:]+=LocSpot[0]+int(np.round(self._TxMechanicalAdjustmentX/self._SIM_SETTINGS.SpatialStep))
-            TxVert[1,:]+=LocSpot[1]+int(np.round(self._TxMechanicalAdjustmentY/self._SIM_SETTINGS.SpatialStep))
-            TxVert[2,:]+=LocSpot[2]+int(np.round((self._ZSteering-self._TxMechanicalAdjustmentZ)/self._SIM_SETTINGS.SpatialStep))
-
+            TxVert[0,:]+=LocSpot[0]
+            TxVert[1,:]+=LocSpot[1]
+              
             TxVert=np.dot(affine,TxVert)
 
             TxVert=TxVert.T[:,:3]
 
             if nt ==0:
-
-                TxStl = mesh.Mesh(np.zeros(self._SIM_SETTINGS._TxREMOPD['FaceDisplay'].shape[0]*2, dtype=mesh.Mesh.dtype))
-
-                for i, f in enumerate(self._SIM_SETTINGS._TxREMOPD['FaceDisplay']):
+                TxStl = mesh.Mesh(np.zeros(self._SIM_SETTINGS._Tx['FaceDisplay'].shape[0]*2, dtype=mesh.Mesh.dtype))
+                for i, f in enumerate(self._SIM_SETTINGS._Tx['FaceDisplay']):
                     TxStl.vectors[i*2][0] = TxVert[f[0],:]
                     TxStl.vectors[i*2][1] = TxVert[f[1],:]
                     TxStl.vectors[i*2][2] = TxVert[f[3],:]
@@ -266,6 +286,7 @@ class SimulationConditions(SimulationConditionsBASE):
                       ZSteering=0.0,
                       RotationZ=0.0,#rotation of Tx over Z axis
                       TxSet='Total', #Total selects all the 256 elements, Sector1 the central 128 elements, and Sector2 the external 128
+                      bFlipSteeringY=False,
                       **kargs):
         super().__init__(Aperture=Aperture,FocalLength=FocalLength,
                          ZTxCorrecton=-ZDistance, #this will put the required water space in the simulation domain
@@ -275,12 +296,13 @@ class SimulationConditions(SimulationConditionsBASE):
         self._ZSteering=ZSteering
         self._RotationZ=RotationZ
         self._TxSet = TxSet
+        self._bFlipSteeringY = bFlipSteeringY
         
     def CalculateRayleighFieldsForward(self,deviceName='6800'):
         print("Precalculating Rayleigh-based field as input for FDTD...")
         #first we generate the high res source of the tx elements
         # and we select the set based on input
-        self._TxREMOPD=GenerateREMOPDTx(RotationZ=self._RotationZ,Frequency=self._Frequency)[self._TxSet]
+        self._Tx=GenerateREMOPDTx(RotationZ=self._RotationZ,Frequency=self._Frequency)[self._TxSet]
         
         if self._TxMechanicalAdjustmentZ <0:
             zCorrec= self._TxMechanicalAdjustmentZ
@@ -288,27 +310,27 @@ class SimulationConditions(SimulationConditionsBASE):
             zCorrec=0.0
         
         for k in ['center','elemcenter','VertDisplay']:
-            self._TxREMOPD[k][:,0]+=self._TxMechanicalAdjustmentX
-            self._TxREMOPD[k][:,1]+=self._TxMechanicalAdjustmentY
-            self._TxREMOPD[k][:,2]=self._ZDim[self._ZSourceLocation]-self._SkullMaskNii.header.get_zooms()[2]/1e3+zCorrec
+            self._Tx[k][:,0]+=self._TxMechanicalAdjustmentX
+            self._Tx[k][:,1]+=self._TxMechanicalAdjustmentY
+            self._Tx[k][:,2]=self._ZDim[self._ZSourceLocation]-self._SkullMaskNii.header.get_zooms()[2]/1e3+zCorrec
             
         Correction=0.0
-        while np.max(self._TxREMOPD['center'][:,2])>=self._ZDim[self._ZSourceLocation]:
+        while np.max(self._Tx['center'][:,2])>=self._ZDim[self._ZSourceLocation]:
             #at the most, we could be too deep only a fraction of a single voxel, in such case we just move the Tx back a single step
-            for Tx in [self._TxREMOPD]:
+            for Tx in [self._Tx]:
                 for k in ['center','VertDisplay','elemcenter']:
                     Tx[k][:,2]-=self._SkullMaskNii.header.get_zooms()[2]/1e3
             Correction+=self._SkullMaskNii.header.get_zooms()[2]/1e3
         if Correction>0:
             print('Warning: Need to apply correction to reposition Tx for',Correction)
         #if yet we are not there, we need to stop
-        if np.max(self._TxREMOPD['center'][:,2])>self._ZDim[self._ZSourceLocation]:
-            print("np.max(self._TxREMOPD['center'][:,2]),self._ZDim[self._ZSourceLocation]",np.max(self._TxREMOPD['center'][:,2]),self._ZDim[self._ZSourceLocation])
+        if np.max(self._Tx['center'][:,2])>self._ZDim[self._ZSourceLocation]:
+            print("np.max(self._Tx['center'][:,2]),self._ZDim[self._ZSourceLocation]",np.max(self._Tx['center'][:,2]),self._ZDim[self._ZSourceLocation])
             raise RuntimeError("The Tx limit in Z is below the location of the layer for source location for forward propagation.")
       
         
-        print("self._TxREMOPD['center'].min(axis=0)",self._TxREMOPD['center'].min(axis=0))
-        print("self._TxREMOPD['elemcenter'].min(axis=0)",self._TxREMOPD['elemcenter'].min(axis=0))
+        print("self._Tx['center'].min(axis=0)",self._Tx['center'].min(axis=0))
+        print("self._Tx['elemcenter'].min(axis=0)",self._Tx['elemcenter'].min(axis=0))
       
         #we apply an homogeneous pressure 
        
@@ -316,8 +338,8 @@ class SimulationConditions(SimulationConditionsBASE):
         cwvnb_extlay=np.array(2*np.pi*self._Frequency/Material['Water'][1]+1j*0).astype(np.complex64)
         
         #we store the phase to reprogram the Tx in water only conditions, required later for real experiments
-        self.BasePhasedArrayProgramming=np.zeros(self._TxREMOPD['NumberElems'],np.complex64)
-        self.BasePhasedArrayProgrammingRefocusing=np.zeros(self._TxREMOPD['NumberElems'],np.complex64)
+        self.BasePhasedArrayProgramming=np.zeros(self._Tx['NumberElems'],np.complex64)
+        self.BasePhasedArrayProgrammingRefocusing=np.zeros(self._Tx['NumberElems'],np.complex64)
         
         if self._XSteering!=0.0 or self._YSteering!=0.0 or self._ZSteering!=0.0:
             print('Running Steering')
@@ -328,24 +350,28 @@ class SimulationConditions(SimulationConditionsBASE):
             u0=np.zeros((1),np.complex64)
             u0[0]=1+0j
             center=np.zeros((1,3),np.float32)
-            center[0,0]=self._XDim[self._FocalSpotLocation[0]]+self._TxMechanicalAdjustmentX+self._XSteering
-            center[0,1]=self._YDim[self._FocalSpotLocation[1]]+self._TxMechanicalAdjustmentY+self._YSteering
+            # GUI Y is stored unchanged in the H5; flip only the focus used
+            # for phasing, and only when launched from Brainsight.
+            steerX, steerY = DeviceFrameSteering(
+                self._XSteering, self._YSteering, flip_y=self._bFlipSteeringY)
+            center[0,0]=self._XDim[self._FocalSpotLocation[0]]+self._TxMechanicalAdjustmentX+steerX
+            center[0,1]=self._YDim[self._FocalSpotLocation[1]]+self._TxMechanicalAdjustmentY+steerY
             center[0,2]=self._ZDim[self._ZSourceLocation]+self._ZSteering+zCorrec
 
-            print('center',center,np.mean(self._TxREMOPD['elemcenter'][:,2]))
+            print('center',center,'device-frame XY',(steerX, steerY),np.mean(self._Tx['elemcenter'][:,2]))
             
-            u2back=ForwardSimple(cwvnb_extlay,center,ds.astype(np.float32),u0,self._TxREMOPD['elemcenter'].astype(np.float32),deviceMetal=deviceName)
-            u0=np.zeros((self._TxREMOPD['center'].shape[0],1),np.complex64)
+            u2back=ForwardSimple(cwvnb_extlay,center,ds.astype(np.float32),u0,self._Tx['elemcenter'].astype(np.float32),deviceMetal=deviceName)
+            u0=np.zeros((self._Tx['center'].shape[0],1),np.complex64)
             nBase=0
-            for n in range(self._TxREMOPD['NumberElems']):
+            for n in range(self._Tx['NumberElems']):
                 phi=np.angle(np.conjugate(u2back[n]))
                 self.BasePhasedArrayProgramming[n]=np.conjugate(u2back[n])
-                u0[nBase:nBase+self._TxREMOPD['elemdims']]=(self._SourceAmpPa*np.exp(1j*phi)).astype(np.complex64)
-                nBase+=self._TxREMOPD['elemdims']
+                u0[nBase:nBase+self._Tx['elemdims']]=(self._SourceAmpPa*np.exp(1j*phi)).astype(np.complex64)
+                nBase+=self._Tx['elemdims']
 
             
         else:
-             u0=(np.ones((self._TxREMOPD['center'].shape[0],1),np.float32)+ 1j*np.zeros((self._TxREMOPD['center'].shape[0],1),np.float32))*self._SourceAmpPa
+             u0=(np.ones((self._Tx['center'].shape[0],1),np.float32)+ 1j*np.zeros((self._Tx['center'].shape[0],1),np.float32))*self._SourceAmpPa
              
         nxf=len(self._XDim)
         nyf=len(self._YDim)
@@ -358,8 +384,8 @@ class SimulationConditions(SimulationConditionsBASE):
         
         u0*=self.AdjustWeightAmplitudes()
         
-        u2=ForwardSimple(cwvnb_extlay,self._TxREMOPD['center'].astype(np.float32),
-                         self._TxREMOPD['ds'].astype(np.float32),u0,rf,deviceMetal=deviceName)
+        u2=ForwardSimple(cwvnb_extlay,self._Tx['center'].astype(np.float32),
+                         self._Tx['ds'].astype(np.float32),u0,rf,deviceMetal=deviceName)
         u2=np.reshape(u2,xp.shape)
         
         self._u2RayleighField=u2
@@ -454,17 +480,17 @@ class SimulationConditions(SimulationConditionsBASE):
         cwvnb_extlay=np.array(2*np.pi*self._Frequency/Material['Water'][1]+1j*0).astype(np.complex64)
 
         u2back=ForwardSimple(cwvnb_extlay,center.astype(np.float32),ds.astype(np.float32),
-                             u0,self._TxREMOPD['elemcenter'].astype(np.float32),deviceMetal=deviceName)
+                             u0,self._Tx['elemcenter'].astype(np.float32),deviceMetal=deviceName)
         
         #now we calculate forward back
         
-        u0=np.zeros((self._TxREMOPD['center'].shape[0],1),np.complex64)
+        u0=np.zeros((self._Tx['center'].shape[0],1),np.complex64)
         nBase=0
-        for n in range(self._TxREMOPD['NumberElems']):
+        for n in range(self._Tx['NumberElems']):
             phi=np.angle(np.conjugate(u2back[n]))
             self.BasePhasedArrayProgrammingRefocusing[n]=np.conjugate(u2back[n])
-            u0[nBase:nBase+self._TxREMOPD['elemdims']]=(self._SourceAmpPa*np.exp(1j*phi)).astype(np.complex64)
-            nBase+=self._TxREMOPD['elemdims']
+            u0[nBase:nBase+self._Tx['elemdims']]=(self._SourceAmpPa*np.exp(1j*phi)).astype(np.complex64)
+            nBase+=self._Tx['elemdims']
 
         nxf=len(self._XDim)
         nyf=len(self._YDim)
@@ -475,7 +501,7 @@ class SimulationConditions(SimulationConditionsBASE):
         
         rf=np.hstack((np.reshape(xp,(nxf*nyf*nzf,1)),np.reshape(yp,(nxf*nyf*nzf,1)), np.reshape(zp,(nxf*nyf*nzf,1)))).astype(np.float32)
         
-        u2=ForwardSimple(cwvnb_extlay,self._TxREMOPD['center'].astype(np.float32),self._TxREMOPD['ds'].astype(np.float32),u0,rf,deviceMetal=deviceName)
+        u2=ForwardSimple(cwvnb_extlay,self._Tx['center'].astype(np.float32),self._Tx['ds'].astype(np.float32),u0,rf,deviceMetal=deviceName)
         u2=np.reshape(u2,xp.shape)
         self._SourceMapRayleighRefocus=u2[:,:,self._ZSourceLocation].copy()
         self._SourceMapRayleighRefocus[:self._PMLThickness,:]=0

@@ -22,6 +22,12 @@ class REMOPD(BabelBasePhaseArray):
 
     # Inherits BabelBasePhaseArray.load_ui (-> _setupTrajectoryTabs); only the
     # form and its wiring differ.
+
+    @property
+    def FlipSteeringY(self):
+        yflip = self._MainApp.Config.get('TrajectoryType') == 'brainsight'
+        return yflip
+
     def _CreateForm(self):
         from Babel_REMOPD.REMOPDForm import REMOPDForm
         return REMOPDForm(self)
@@ -47,6 +53,7 @@ class REMOPD(BabelBasePhaseArray):
         self.Widget.LabelTissueRemoved.setVisible(False)
         self.Widget.CalculateMechAdj.clicked.connect(self.CalculateMechAdj)
         self.Widget.CalculateMechAdj.setEnabled(False)
+        self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
         self.up_load_ui()
         
     @Slot()
@@ -72,7 +79,6 @@ class REMOPD(BabelBasePhaseArray):
         self._SyncActiveTrajectoryFromMainApp()
         DistanceFromSkin = self.CalculateDistanceFromSkin()
         self.Widget.ZSteeringSpinBox.setValue(np.round(DistanceFromSkin,1))
-
 
     @Slot()
     def _ResolveSimulationFilenames(self):
@@ -174,15 +180,13 @@ class RunAcousticSim(QObject):
 
         bRefocus = self._mainApp.AcSim.Widget.RefocusingcheckBox.isChecked()
         #we can use mechanical adjustments in other directions for final tuning
+        TxMechanicalAdjustmentZ= -self._mainApp.AcSim.Widget.SkinDistanceSpinBox.value()/1e3  #in m
         if not bRefocus:
             TxMechanicalAdjustmentX= self._mainApp.AcSim.Widget.XMechanicSpinBox.value()/1e3 #in m
             TxMechanicalAdjustmentY= self._mainApp.AcSim.Widget.YMechanicSpinBox.value()/1e3  #in m
-            TxMechanicalAdjustmentZ= -self._mainApp.AcSim.Widget.SkinDistanceSpinBox.value()/1e3  #in m
-
         else:
             TxMechanicalAdjustmentX=0
             TxMechanicalAdjustmentY=0
-            TxMechanicalAdjustmentZ=0
         ###############
         XSteering=self._mainApp.AcSim.Widget.XSteeringSpinBox.value()/1e3 
         YSteering=self._mainApp.AcSim.Widget.YSteeringSpinBox.value()/1e3  
@@ -212,8 +216,11 @@ class RunAcousticSim(QObject):
         kargs['YSteering']=YSteering
         kargs['ZSteering']=ZSteering
         kargs['RotationZ']=RotationZ
-        kargs['RotationZ']=RotationZ
         kargs['TxSet']=TxSet
+        # GUI Y stays as typed; flip Y in the solver for Brainsight trajectories.
+        # kargs['bFlipSteeringY']= self._mainApp.AcSim.FlipSteeringY
+        # if kargs['bFlipSteeringY']:
+        #     print('Flipping Y Steering for brainsight operation for REMOPD')
         kargs['Frequencies']=Frequencies
         kargs['zLengthBeyonFocalPointWhenNarrow']=self._mainApp.AcSim.Widget.MaxDepthSpinBox.value()/1e3
         kargs['bDoRefocusing']=bRefocus

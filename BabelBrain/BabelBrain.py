@@ -759,6 +759,25 @@ class BabelBrain(QWidget):
             USMaskkHzDropDown.lineEdit().textChanged.connect(self.StartManualMaskFrequency)
             USMaskkHzDropDown.lineEdit().editingFinished.connect(self.UpdateManualMaskFrequency)
 
+        # Top-bar cue — only meaningful once AcSim exists, as the steering
+        # flips are properties of the transducer class.
+        self.UpdateOrientationCue()
+
+    def UpdateOrientationCue(self):
+        '''
+        Refresh the top-bar glyph showing which way the device's +X / +Y
+        steering axes point on screen (see _BabelBaseTx.FlipSteeringX/Y).
+        '''
+        if not hasattr(self,'AcSim'):
+            return
+        try:
+            self.Widget.OrientationCue.SetOrientation(self.AcSim.FlipSteeringX,
+                                                      self.AcSim.FlipSteeringY,
+                                                      DeviceName=self.Config['TxSystem'])
+        except BaseException as e:
+            print('Unable to update orientation cue')
+            print(e)
+
 
     @Slot()
     def StartManualMaskFrequency(self,txt):
@@ -1066,15 +1085,22 @@ class BabelBrain(QWidget):
                 self._TrajectoryNumber+=1
                 self.ExecuteTrajectory()
 
-    def ReadTrajectory(self,bGetID=False):
-         if self.Config['TrajectoryType']=='brainsight':
-             return ReadTrajectoryBrainsight(self.Config['Mat4Trajectory'],bGetID=bGetID)
-         elif self.Config['TrajectoryType']=='slicer':
-             return read_converted_itk_affine_transform(self.Config['Mat4Trajectory'],bGetID=bGetID)
-         elif self.Config['TrajectoryType']=='localite':
-             return LocaliteTargeting.from_file(self.Config['Mat4Trajectory']).ReturnBabelBrainTrajectories(bGetID=bGetID)
-         else:
-             raise ValueError("trajectory type not supported yet: "+self.Config['TrajectoryType'])
+    def ReadTrajectory(self,bGetID=False,sel_fname=''):
+        if len(sel_fname)>0:
+            if not os.path.isfile(sel_fname):
+                raise ValueError(f'sel_fname should point to a valid file: {sel_fname}')
+            input_fname = sel_fname
+        else:
+            input_fname = self.Config['Mat4Trajectory']
+             
+        if self.Config['TrajectoryType']=='brainsight':
+            return ReadTrajectoryBrainsight(input_fname,bGetID=bGetID)
+        elif self.Config['TrajectoryType']=='slicer':
+            return read_converted_itk_affine_transform(input_fname,bGetID=bGetID)
+        elif self.Config['TrajectoryType']=='localite':
+            return LocaliteTargeting.from_file(input_fname).ReturnBabelBrainTrajectories(bGetID=bGetID)
+        else:
+            raise ValueError("trajectory type not supported yet: "+self.Config['TrajectoryType'])
          
 
     #this will modify the coordinates of the trajectory
@@ -1922,6 +1948,8 @@ class RunMaskGeneration(QObject):
         kargs['Location']=[0,0,0] #This coordinate will be ignored
         kargs['prefix']=prefix
         kargs['TrajectoryNumber']=TrajectoryNumber
+        kargs['bFlipINifti']=self._mainApp.AcSim.FlipSteeringX
+        kargs['bFlipJNifti']=self._mainApp.AcSim.FlipSteeringY
         kargs['bPlot']=False
         if self._mainApp.Config['bUseCT']:
             kargs['CT_or_ZTE_input']=self._mainApp.Config['CT_or_ZTE_input']
