@@ -597,7 +597,7 @@ class RunServerCalculation(QObject):
         if self._step != STEP_ACOUSTIC:
             return {}
         try:
-            from _BabelBasePhasedArray import BabelBasePhaseArray
+            from babel_transducers.transducer_templates.base_phase_array_tx import BabelBasePhaseArray
         except Exception:
             return {}
         sim = getattr(self._mainApp, 'AcSim', None)
