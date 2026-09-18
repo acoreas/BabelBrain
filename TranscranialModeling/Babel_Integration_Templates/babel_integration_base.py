@@ -38,7 +38,7 @@ try:
 except ImportError:
     def _rec_artifact(_p, **_k):
         return _p
-from TranscranialModeling.babel_integration_templates.babel_integration_helpers import * 
+from TranscranialModeling.babel_integration_templates.babel_integration_helpers import *
 
 PModel = PropagationModel()
 

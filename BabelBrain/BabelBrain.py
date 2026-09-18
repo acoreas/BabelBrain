@@ -680,7 +680,7 @@ class BabelBrain(QWidget):
         ## THIS WILL BE LOADED DYNAMICALLY in function of the active Tx
         import BabelDatasetPreps as DataPreps
 
-        from TranscranialModeling.BabelIntegrationBASE import GetSmallestSOS
+        from TranscranialModeling.babel_integration_templates.babel_integration_helpers import GetSmallestSOS
         idimport = self.Config['TxModuleName']
         ibsub=idimport
         try:

@@ -20,7 +20,7 @@ from GUIComponents.custom_transducer_dialog import (CUSTOM_TRANSDUCER_OPTION,
                                                     custom_transducer_display_name)
 from GUIComponents.custom_transducer_manager_dialog import CustomTransducerManagerDialog
 import RemoteServers
-from TranscranialModeling.BabelIntegrationBASE import SpeedofSoundWebbDataset
+from TranscranialModeling.babel_integration_templates.babel_integration_helpers import SpeedofSoundWebbDataset
 # Important:
 # You need to run the following command to generate the ui_form.py file
 #     pyside6-uic form.ui -o ui_form.py, or
