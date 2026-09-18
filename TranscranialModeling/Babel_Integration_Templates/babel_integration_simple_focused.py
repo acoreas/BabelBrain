@@ -10,14 +10,14 @@ ABOUT:
 
 import os
 
-from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater
 import matplotlib.pyplot as plt
 import numpy as np
+from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater
 from scipy.io import loadmat
 from stl import mesh
 from trimesh import creation
 
-from TranscranialModeling.BabelIntegrationBASE import (
+from TranscranialModeling.babel_integration_templates.babel_integration_base import (
     RUN_SIM_BASE,
     _rec_artifact,
     BabelFTD_Simulations_BASE,
@@ -39,7 +39,7 @@ class RUN_SIM(RUN_SIM_BASE):
 
 class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
     # Meta class dealing with the specificis of each test based on the string name
-    def __init__(self, Aperture=50e-3, FocalLength=50e-3, **kargs):
+    def __init__(self, Aperture=0.0, FocalLength=0.0, **kargs):
         self._Aperture = Aperture
         self._FocalLength = FocalLength
         super().__init__(**kargs)
@@ -51,28 +51,23 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
 
     def GenerateSTLTx(self, prefix):
         n = 1
-        VertDisplay = self._SIM_SETTINGS._TxRCOrig["VertDisplay"]
-        FaceDisplay = self._SIM_SETTINGS._TxRCOrig["FaceDisplay"]
-
-        # we also export the STL of the Tx for display in Brainsight or 3D slicer
-        TxVert = VertDisplay.T.copy()
-        TxVert /= self._SIM_SETTINGS.SpatialStep
-        TxVert = np.vstack([TxVert, np.ones((1, TxVert.shape[1]))])
-        affine = self._SkullMask.affine
-
         LocSpot = np.array(
             np.where(self._SkullMask.get_fdata(dtype=np.float32) == 5.0)
         ).flatten()
+        affine = self._SkullMask.affine
+        VertDisplay = self._SIM_SETTINGS._Tx["VertDisplay"]
+        FaceDisplay = self._SIM_SETTINGS._Tx["FaceDisplay"]
 
+        # we also export the STL of the Tx for display in Brainsight or 3D slicer
+        TxVert = VertDisplay.T.copy()
+        TxVert[2, :] -= self._SIM_SETTINGS._ZDim[self._SIM_SETTINGS._PMLThickness]
         TxVert[2, :] = -TxVert[2, :]
+        TxVert /= self._SIM_SETTINGS.SpatialStep
+        TxVert[2, :] += self._SkullMask.shape[2] - 1
+        TxVert = np.vstack([TxVert, np.ones((1, TxVert.shape[1]))])
+
         TxVert[0, :] += LocSpot[0]
         TxVert[1, :] += LocSpot[1]
-        TxVert[2, :] += (
-            LocSpot[2]
-            + self._SIM_SETTINGS._FocalLength
-            / self._SIM_SETTINGS._FactorEnlarge
-            / self._SIM_SETTINGS.SpatialStep
-        )
 
         TxVert = np.dot(affine, TxVert)
 
@@ -134,8 +129,8 @@ class SimulationConditions(SimulationConditionsBASE):
     def __init__(
         self,
         FactorEnlarge=1.0,  # putting a Tx with same F# but just bigger helps to create a more coherent input field for FDTD
-        Aperture=64e-3,  # m, aperture of the Tx, used to calculated cross section area entering the domain
-        FocalLength=63.2e-3,
+        Aperture=0.0,  # m, aperture of the Tx, used to calculated cross section area entering the domain
+        FocalLength=0.0,
         **kargs,
     ):  # steering
         super().__init__(
@@ -169,32 +164,31 @@ class SimulationConditions(SimulationConditionsBASE):
     def CalculateRayleighFieldsForward(self, deviceName="6800"):
         print("Precalculating Rayleigh-based field as input for FDTD...")
         # first we generate the high res source of the tx elements
-        self._TxRC = self.GenTx()
-        self._TxRCOrig = self.GenTx(bOrigDimensions=True)
+        self._Tx = self.GenTx()
 
         ZDomainStart = self.CalculateDomainZReference()
 
-        print("Init Location of back Tx in Z", self._TxRC["center"][:, 2].min())
+        print("Init Location of back Tx in Z", self._Tx["center"][:, 2].min())
 
-        for Tx in [self._TxRC, self._TxRCOrig]:
+        for Tx in [self._Tx]:
             for k in ["center", "VertDisplay", "elemcenter"]:
                 Tx[k][:, 0] += self._TxMechanicalAdjustmentX
                 Tx[k][:, 1] += self._TxMechanicalAdjustmentY
                 Tx[k][:, 2] += self._TxMechanicalAdjustmentZ + ZDomainStart
         Correction = 0.0
-        while np.max(self._TxRC["center"][:, 2]) >= self._ZDim[self._ZSourceLocation]:
+        while np.max(self._Tx["center"][:, 2]) >= self._ZDim[self._ZSourceLocation]:
             # at the most, we could be too deep only a fraction of a single voxel, in such case we just move the Tx back a single step
-            for Tx in [self._TxRC, self._TxRCOrig]:
+            for Tx in [self._Tx]:
                 for k in ["center", "VertDisplay", "elemcenter"]:
                     Tx[k][:, 2] -= self._SkullMaskNii.header.get_zooms()[2] / 1e3
             Correction += self._SkullMaskNii.header.get_zooms()[2] / 1e3
         if Correction > 0:
             print("Warning: Need to apply correction to reposition Tx for", Correction)
         # if yet we are not there, we need to stop
-        if np.max(self._TxRC["center"][:, 2]) > self._ZDim[self._ZSourceLocation]:
+        if np.max(self._Tx["center"][:, 2]) > self._ZDim[self._ZSourceLocation]:
             print(
-                "np.max(self._TxRC['center'][:,2]),self._ZDim[self._ZSourceLocation]",
-                np.max(self._TxRC["center"][:, 2]),
+                "np.max(self._Tx['center'][:,2]),self._ZDim[self._ZSourceLocation]",
+                np.max(self._Tx["center"][:, 2]),
                 self._ZDim[self._ZSourceLocation],
             )
             raise RuntimeError(
@@ -202,7 +196,7 @@ class SimulationConditions(SimulationConditionsBASE):
             )
 
         # we apply an homogeneous pressure
-        print("Location of back Tx in Z", self._TxRC["center"][:, 2].min())
+        print("Location of back Tx in Z", self._Tx["center"][:, 2].min())
         print("Location of source layer Z", self._ZDim[self._ZSourceLocation])
 
         cwvnb_extlay = np.array(
@@ -210,8 +204,8 @@ class SimulationConditions(SimulationConditionsBASE):
         ).astype(np.complex64)
 
         u0 = (
-            np.ones((self._TxRC["center"].shape[0], 1), np.float32)
-            + 1j * np.zeros((self._TxRC["center"].shape[0], 1), np.float32)
+            np.ones((self._Tx["center"].shape[0], 1), np.float32)
+            + 1j * np.zeros((self._Tx["center"].shape[0], 1), np.float32)
         ) * self._SourceAmpPa
         nxf = len(self._XDim)
         nyf = len(self._YDim)
@@ -229,8 +223,8 @@ class SimulationConditions(SimulationConditionsBASE):
 
         u2 = ForwardSimple(
             cwvnb_extlay,
-            self._TxRC["center"].astype(np.float32),
-            self._TxRC["ds"].astype(np.float32),
+            self._Tx["center"].astype(np.float32),
+            self._Tx["ds"].astype(np.float32),
             u0,
             rf,
             deviceMetal=deviceName,

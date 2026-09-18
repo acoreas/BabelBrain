@@ -873,7 +873,7 @@ class CustomTransducer:
         
         
         # Environment for jinja files
-        env = Environment(loader=FileSystemLoader(resource_path(__file__) / ".." / "Babel_Tx_Templates"), trim_blocks=True, lstrip_blocks=True)
+        env = Environment(loader=FileSystemLoader(resource_path(__file__) / ".." / "babel_transducers" / "transducer_templates"), trim_blocks=True, lstrip_blocks=True)
         self.env = env
         
         self._set_tx_file_paths()
@@ -1132,7 +1132,7 @@ class CustomTransducer:
                 pass 
             else:
                 for freq in self.PlanTUS:
-                    focal_dists_per_freq, FHMLs_per_freq = self._run_rayleigh_PlanTUS(freq,plot_FHML=False)
+                    focal_dists_per_freq, FHMLs_per_freq = self._run_rayleigh_PlanTUS(freq,normalized_pressure=False,plot_FHML=False)
                     self.PlanTUS[freq]['FocalDistanceList'] = focal_dists_per_freq
                     self.PlanTUS[freq]['FHMLs'] = FHMLs_per_freq
                     del self.PlanTUS[freq]['FocalDistanceListInitial']

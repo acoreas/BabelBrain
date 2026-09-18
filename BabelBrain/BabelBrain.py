@@ -681,20 +681,16 @@ class BabelBrain(QWidget):
         import BabelDatasetPreps as DataPreps
 
         from TranscranialModeling.BabelIntegrationBASE import GetSmallestSOS
-        if self.Config['TxSystem'] =='BSonix':
-            idimport = 'SingleTx'
-            ibsub='BSonix'
-        else:
-            idimport = self.Config['TxModuleName']
-            ibsub=idimport
+        idimport = self.Config['TxModuleName']
+        ibsub=idimport
         try:
             if self.Config['is_custom_tx']:
                 module_directory = Path.home() / '.config' / 'BabelBrain' / 'Transducers'
                 sys.path.insert(0, str(module_directory))
 
-                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
+                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.{self.Config['TxType']}.Babel_{ibsub}").__dict__[ibsub]
             else:
-                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
+                WidgetAcSim = importlib.import_module(f"babel_transducers.{self.Config['TxType']}.{idimport}.{idimport}").__dict__[ibsub]
         except ImportError:
             EndWithError("TX system " + self.Config['TxSystem'] + " is not yet supported")
 

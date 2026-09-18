@@ -55,11 +55,11 @@ def CalculateFieldProcess(queue,Target,TxSystem,**kargs):
             from TranscranialModeling.Babel_Integration_Templates.babel_integration_focused_array import RUN_SIM
     else:
         if TxSystem in ['Single','BSonix']:
-            from TranscranialModeling.BabelIntegrationSingle import RUN_SIM 
+            from TranscranialModeling.babel_integration_templates.babel_integration_simple_focused import RUN_SIM 
         elif TxSystem in ['CTX_500','CTX_250','CTX_250_2ch','DPX_500','DPXPC_300','R15287','R15473']:
-            from TranscranialModeling.BabelIntegrationANNULAR_ARRAY import RUN_SIM 
+            from TranscranialModeling.babel_integration_templates.babel_integration_focused_annular_array import RUN_SIM 
         elif TxSystem in ['H317','H246','REMOPD','I12378','ATAC','R15148','R15646','IGT64_500','H301','DomeTx']:
-            module_name = f"TranscranialModeling.BabelIntegration{TxSystem}"
+            module_name = f"TranscranialModeling.babel_integration_transducers.babel_integration_{TxSystem}"
             RUN_SIM = importlib.import_module(module_name).RUN_SIM
         else:
             raise ValueError("TX system " + TxSystem + " is not yet supported")

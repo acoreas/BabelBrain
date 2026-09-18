@@ -342,10 +342,10 @@ def generate_flat_annular_array_tx(frequency, aperture, focal_length, inner_diam
             
     return flat_annular_array_tx
 
-def generate_focused_array_tx(element_coords, num_elements, frequency, focal_length, element_diameter, validate_elements=True, sos=1500, rotation_z=0.0, coordinate_sys="spherical",show_plot=False):
+def generate_focused_array_tx(element_coords, num_elements, frequency, focal_length, element_diameter, validate_elements=True, sos=1500, rotation_z=0.0, coordinate_sys="spherical",show_plot=False,ppw_surface=8):
     
     # Individual tx element
-    tx_element = generate_curved_element(frequency,focal_length,element_diameter,sos,ppw_surface=8)
+    tx_element = generate_curved_element(frequency,focal_length,element_diameter,sos,ppw_surface)
     
     # Validate element coords
     if validate_elements:

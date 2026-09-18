@@ -16,7 +16,7 @@ import numpy as np
 from stl import mesh
 from trimesh import creation
 
-from TranscranialModeling.BabelIntegrationBASE import (
+from TranscranialModeling.babel_integration_templates.babel_integration_base import (
     RUN_SIM_BASE,
     _rec_artifact,
     BabelFTD_Simulations_BASE,
@@ -96,22 +96,19 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         TxElemCenters = []
 
         for VertDisplay, FaceDisplay in zip(
-            self._SIM_SETTINGS._TxRCOrig["RingVertDisplay"],
-            self._SIM_SETTINGS._TxRCOrig["RingFaceDisplay"],
+            self._SIM_SETTINGS._Tx["RingVertDisplay"],
+            self._SIM_SETTINGS._Tx["RingFaceDisplay"],
         ):
             # we also export the STL of the Tx for display in Brainsight or 3D slicer
             TxVert = VertDisplay.T.copy()
+            TxVert[2, :] -= self._SIM_SETTINGS._ZDim[self._SIM_SETTINGS._PMLThickness]
+            TxVert[2, :] = -TxVert[2, :]
             TxVert /= self._SIM_SETTINGS.SpatialStep
+            TxVert[2, :] += self._SkullMask.shape[2] - 1
             TxVert = np.vstack([TxVert, np.ones((1, TxVert.shape[1]))])
 
-            TxVert[2, :] = -TxVert[2, :]
             TxVert[0, :] += LocSpot[0]
             TxVert[1, :] += LocSpot[1]
-            TxVert[2, :] += (
-                LocSpot[2]
-                + (self._SIM_SETTINGS._FocalLength / self._SIM_SETTINGS._FactorEnlarge)
-                / self._SIM_SETTINGS.SpatialStep
-            )
 
             TxVert = np.dot(affine, TxVert)
 
@@ -249,15 +246,14 @@ class SimulationConditions(SimulationConditionsBASE):
     def CalculateRayleighFieldsForward(self, deviceName="6800"):
         print("Precalculating Rayleigh-based field as input for FDTD...")
         # first we generate the high res source of the tx elements
-        self._TxRC = self.GenTx()
-        self._TxRCOrig = self.GenTx(bOrigDimensions=True)
+        self._Tx = self.GenTx()
 
         ZDomainStart = self.CalculateDomainZReference()
 
-        print("Tx z  min", self._TxRC["center"][:, 2].min())
+        print("Tx z  min", self._Tx["center"][:, 2].min())
         print("self._TxMechanicalAdjustmentZ", self._TxMechanicalAdjustmentZ)
 
-        for Tx in [self._TxRC, self._TxRCOrig]:
+        for Tx in [self._Tx]:
             for k in ["center", "RingVertDisplay", "elemcenter"]:
                 if k == "RingVertDisplay":
                     for n in range(len(Tx[k])):
@@ -269,12 +265,12 @@ class SimulationConditions(SimulationConditionsBASE):
                     Tx[k][:, 1] += self._TxMechanicalAdjustmentY
                     Tx[k][:, 2] += self._TxMechanicalAdjustmentZ + ZDomainStart
 
-        print("Tx z  min", self._TxRC["center"][:, 2].min())
+        print("Tx z  min", self._Tx["center"][:, 2].min())
         # we apply an homogeneous pressure
         Correction = 0.0
-        while np.max(self._TxRC["center"][:, 2]) >= self._ZDim[self._ZSourceLocation]:
+        while np.max(self._Tx["center"][:, 2]) >= self._ZDim[self._ZSourceLocation]:
             # at the most, we could be too deep only a fraction of a single voxel, in such case we just move the Tx back a single step
-            for Tx in [self._TxRC, self._TxRCOrig]:
+            for Tx in [self._Tx]:
                 for k in ["center", "RingVertDisplay", "elemcenter"]:
                     if k == "RingVertDisplay":
                         for n in range(len(Tx[k])):
@@ -287,17 +283,17 @@ class SimulationConditions(SimulationConditionsBASE):
         if Correction > 0:
             print("Warning: Need to apply correction to reposition Tx for", Correction)
         # if yet we are not there, we need to stop
-        if np.max(self._TxRC["center"][:, 2]) > self._ZDim[self._ZSourceLocation]:
+        if np.max(self._Tx["center"][:, 2]) > self._ZDim[self._ZSourceLocation]:
             print(
-                "np.max(self._TxRC['center'][:,2]),self._ZDim[self._ZSourceLocation]",
-                np.max(self._TxRC["center"][:, 2]),
+                "np.max(self._Tx['center'][:,2]),self._ZDim[self._ZSourceLocation]",
+                np.max(self._Tx["center"][:, 2]),
                 self._ZDim[self._ZSourceLocation],
             )
             raise RuntimeError(
                 "The Tx limit in Z is below the location of the layer for source location for forward propagation."
             )
 
-        print("Tx z  min", self._TxRC["center"][:, 2].min())
+        print("Tx z  min", self._Tx["center"][:, 2].min())
 
         cwvnb_extlay = np.array(
             2 * np.pi * self._Frequency / Material["Water"][1] + 1j * 0
@@ -305,7 +301,7 @@ class SimulationConditions(SimulationConditionsBASE):
 
         # we store the phase to reprogram the Tx in water only conditions, required later for real experiments
         self.BasePhasedArrayProgramming = np.zeros(
-            self._TxRC["NumberElems"], np.complex64
+            self._Tx["NumberElems"], np.complex64
         )
 
         print("Running Steering")
@@ -327,30 +323,30 @@ class SimulationConditions(SimulationConditionsBASE):
         print("center", center)
         print("Z location", self._ZDim[self._ZSourceLocation])
 
-        u2back = np.zeros(self._TxRC["NumberElems"], np.complex64)
+        u2back = np.zeros(self._Tx["NumberElems"], np.complex64)
         nBase = 0
         print(
             "Locations Tx and center",
-            self._TxRC["center"].min(axis=0),
+            self._Tx["center"].min(axis=0),
             center,
             self._ZDim[self._FocalSpotLocation[2]],
         )
-        for n in range(self._TxRC["NumberElems"]):
-            u0 = np.ones(self._TxRC["elemdims"][n][0], np.complex64)
-            SelCenters = self._TxRC["center"][
-                nBase : nBase + self._TxRC["elemdims"][n][0], :
+        for n in range(self._Tx["NumberElems"]):
+            u0 = np.ones(self._Tx["elemdims"][n][0], np.complex64)
+            SelCenters = self._Tx["center"][
+                nBase : nBase + self._Tx["elemdims"][n][0], :
             ].astype(np.float32)
-            SelDs = self._TxRC["ds"][
-                nBase : nBase + self._TxRC["elemdims"][n][0], :
+            SelDs = self._Tx["ds"][
+                nBase : nBase + self._Tx["elemdims"][n][0], :
             ].astype(np.float32)
             u2back[n] = ForwardSimple(
                 cwvnb_extlay, SelCenters, SelDs, u0, center, deviceMetal=deviceName
             )[0]
-            nBase += self._TxRC["elemdims"][n][0]
+            nBase += self._Tx["elemdims"][n][0]
 
-        AllPhi = np.zeros(self._TxRC["NumberElems"])
+        AllPhi = np.zeros(self._Tx["NumberElems"])
         if "BABEL_AVOID_PHASE_PROGRAMING" not in os.environ:
-            for n in range(self._TxRC["NumberElems"]):
+            for n in range(self._Tx["NumberElems"]):
                 self.BasePhasedArrayProgramming[n] = np.exp(-1j * np.angle(u2back[n]))
                 phi = -np.angle(u2back[n])
                 AllPhi[n] = phi
@@ -359,13 +355,13 @@ class SimulationConditions(SimulationConditionsBASE):
 
         self.BasePhasedArrayProgramming = np.exp(1j * AllPhi)
         print("Phase for array: [", np.rad2deg(AllPhi).tolist(), "]")
-        u0 = np.zeros((self._TxRC["center"].shape[0], 1), np.complex64)
+        u0 = np.zeros((self._Tx["center"].shape[0], 1), np.complex64)
         nBase = 0
-        for n in range(self._TxRC["NumberElems"]):
-            u0[nBase : nBase + self._TxRC["elemdims"][n][0]] = (
+        for n in range(self._Tx["NumberElems"]):
+            u0[nBase : nBase + self._Tx["elemdims"][n][0]] = (
                 self._SourceAmpPa * np.exp(1j * AllPhi[n])
             ).astype(np.complex64)
-            nBase += self._TxRC["elemdims"][n][0]
+            nBase += self._Tx["elemdims"][n][0]
 
         nxf = len(self._XDim)
         nyf = len(self._YDim)
@@ -383,8 +379,8 @@ class SimulationConditions(SimulationConditionsBASE):
 
         u2 = ForwardSimple(
             cwvnb_extlay,
-            self._TxRC["center"].astype(np.float32),
-            self._TxRC["ds"].astype(np.float32),
+            self._Tx["center"].astype(np.float32),
+            self._Tx["ds"].astype(np.float32),
             u0,
             rf,
             deviceMetal=deviceName,
