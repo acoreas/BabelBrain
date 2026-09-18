@@ -26,8 +26,17 @@ from TranscranialModeling.babel_integration_templates.babel_integration_helpers 
 #     pyside6-uic form.ui -o ui_form.py, or
 #     pyside2-uic form.ui -o ui_form.py
 from .ui_form import Ui_Dialog
-from .transducer_list import TRANSDUCER_LIST
 from Utils.paths import resource_path
+
+
+def _load_transducer_list() -> list[dict]:
+    """Load the built-in transducer registry from transducer_list.yaml."""
+    transducer_list_yaml = os.path.join(resource_path(__file__), 'transducer_list.yaml')
+    with open(transducer_list_yaml, 'r') as f:
+        return yaml.safe_load(f)
+
+
+TRANSDUCER_LIST = _load_transducer_list()
 
 
 def show_error_dialog(
@@ -169,7 +178,7 @@ class SelFiles(QDialog):
         )
         self.ui.SettingsToolButton.setMenu(self.ui.SettingsMenu)
 
-        self._PopulateTransducerComboBox()   # populate from transducer_list.py
+        self._PopulateTransducerComboBox()   # populate from transducer_list.yaml
         self.AddCustomTransducersToList()  # Add saved custom transducers
         # Apply the shared compact app style on top of the .ui layout.
         from GUIComponents.AppStyle import app_qss, apply_native_spinbox_style
