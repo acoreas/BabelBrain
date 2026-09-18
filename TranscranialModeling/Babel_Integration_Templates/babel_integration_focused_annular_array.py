@@ -28,7 +28,7 @@ from TranscranialModeling.tx_geometries import generate_annular_array_tx
 
 class RUN_SIM(RUN_SIM_BASE):
     def CreateSimObject(self, **kargs):
-        return BabelFTD_Simulations(ZSteering=self._ZSteering, **kargs)
+        return self._BabelFTDSimClass(ZSteering=self._ZSteering, **kargs)
 
     def RunCases(self, ZSteering=0.0, **kargs):
         self._ZSteering = ZSteering
@@ -77,7 +77,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         super().__init__(**kargs)
 
     def CreateSimConditions(self, **kargs):
-        return SimulationConditions(
+        return self._SimConditionsClass(
             ZSteering=self._ZSteering,
             Aperture=self._Aperture,  # m, aperture of the Tx, used to calculated cross section area entering the domain
             FocalLength=self._FocalLength,
@@ -494,3 +494,7 @@ class SimulationConditions(SimulationConditionsBASE):
             plt.figure(figsize=(3, 2))
             plt.imshow(self._SourceMap[:, :, LocZ])
             plt.title("source map - source ids")
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations

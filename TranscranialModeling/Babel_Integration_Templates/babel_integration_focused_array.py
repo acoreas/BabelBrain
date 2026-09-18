@@ -62,7 +62,7 @@ def CreateSpreadFocus(DiameterFocalBeam=1.5e-3):
 
 class RUN_SIM(RUN_SIM_BASE):
     def CreateSimObject(self,**kargs):
-        return BabelFTD_Simulations(XSteering=self._XSteering,
+        return self._BabelFTDSimClass(XSteering=self._XSteering,
                                     YSteering=self._YSteering,
                                     ZSteering=self._ZSteering,
                                     RotationZ=self._RotationZ,
@@ -139,7 +139,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         super().__init__(**kargs)
 
     def CreateSimConditions(self,**kargs):
-        return SimulationConditions(XSteering=self._XSteering,
+        return self._SimConditionsClass(XSteering=self._XSteering,
                                     YSteering=self._YSteering,
                                     ZSteering=self._ZSteering,
                                     DistanceConeToFocus=self._DistanceConeToFocus,
@@ -498,7 +498,9 @@ class SimulationConditions(SimulationConditionsBASE):
             nSource+=1
             
         self._PulseSourceRefocus=PulseSource
-         
-        
-                
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations
+
         

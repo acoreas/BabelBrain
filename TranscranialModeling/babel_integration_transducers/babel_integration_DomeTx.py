@@ -22,4 +22,7 @@ class BabelFTD_Simulations(babel_integration_dome_focused_array.BabelFTD_Simulat
 
 class SimulationConditions(babel_integration_dome_focused_array.SimulationConditions):
     pass
-        
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations

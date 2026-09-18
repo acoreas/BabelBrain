@@ -27,7 +27,7 @@ from TranscranialModeling.tx_geometries import generate_flat_array_2d_tx
 
 class RUN_SIM(RUN_SIM_BASE):
     def CreateSimObject(self, **kargs):
-        return BabelFTD_Simulations(
+        return self._BabelFTDSimClass(
             XSteering=self._XSteering,
             YSteering=self._YSteering,
             ZSteering=self._ZSteering,
@@ -85,7 +85,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         super().__init__(**kargs)
 
     def CreateSimConditions(self, **kargs):
-        return SimulationConditions(
+        return self._SimConditionsClass(
             XSteering=self._XSteering,
             YSteering=self._YSteering,
             ZSteering=self._ZSteering,
@@ -566,3 +566,7 @@ class SimulationConditions(SimulationConditionsBASE):
             nSource += 1
 
         self._PulseSourceRefocus = PulseSource
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations

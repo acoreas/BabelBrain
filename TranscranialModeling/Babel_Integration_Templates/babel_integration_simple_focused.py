@@ -29,7 +29,7 @@ from TranscranialModeling.tx_geometries import generate_curved_element
 
 class RUN_SIM(RUN_SIM_BASE):
     def CreateSimObject(self, **kargs):
-        return BabelFTD_Simulations(**kargs)
+        return self._BabelFTDSimClass(**kargs)
 
     def RunCases(self, **kargs):
         self._Aperture = kargs["Aperture"]
@@ -45,7 +45,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         super().__init__(**kargs)
 
     def CreateSimConditions(self, **kargs):
-        return SimulationConditions(
+        return self._SimConditionsClass(
             Aperture=self._Aperture, FocalLength=self._FocalLength, **kargs
         )
 
@@ -314,3 +314,7 @@ class SimulationConditions(SimulationConditionsBASE):
             plt.figure(figsize=(3, 2))
             plt.imshow(self._SourceMap[:, :, LocZ])
             plt.title("source map - source ids")
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations

@@ -12,3 +12,7 @@ class BabelFTD_Simulations(babel_integration_flat_annular_array.BabelFTD_Simulat
 
 class SimulationConditions(babel_integration_flat_annular_array.SimulationConditions):
     pass
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations

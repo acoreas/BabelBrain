@@ -45,10 +45,11 @@ PModel = PropagationModel()
 class RUN_SIM_BASE(object):
     '''
     Base class for running acoustic and thermal simulations.
-    
     Provides framework for creating simulation objects and running simulation cases
     with various configuration parameters.
     '''
+    _BabelFTDSimClass = None
+
     def CreateSimObject(self, **kwargs):
         '''
         Create simulation object with specified parameters.
@@ -259,6 +260,9 @@ def OutputFileNames(MASKFNAME,target,Frequency,PPW,extrasuffix,bWaterOnly):
 
 class BabelFTD_Simulations_BASE(object):
     #Meta class dealing with the specificis of each test based on the string name
+
+    _SimConditionsClass = None
+
     def __init__(self,MASKFNAME='',
                  Frequency=250e3,
                  bDisplay=True,

@@ -35,30 +35,12 @@ def compute_H301_xyz_coords(radii, theta, focal_length):
 
 
 class RUN_SIM(babel_integration_focused_array.RUN_SIM):
-    def CreateSimObject(self,**kargs):
-        return BabelFTD_Simulations(XSteering=self._XSteering,
-                                    YSteering=self._YSteering,
-                                    ZSteering=self._ZSteering,
-                                    RotationZ=self._RotationZ,
-                                    DistanceConeToFocus=self._DistanceConeToFocus,
-                                    **kargs)
-    
+    pass
+
 
 class BabelFTD_Simulations(babel_integration_focused_array.BabelFTD_Simulations):
-    
-    def CreateSimConditions(self,**kargs):
-        return SimulationConditions(XSteering=self._XSteering,
-                                    YSteering=self._YSteering,
-                                    ZSteering=self._ZSteering,
-                                    DistanceConeToFocus=self._DistanceConeToFocus,
-                                    RotationZ=self._RotationZ,
-                                    Aperture=self._Aperture, # m, aperture of the Tx, used tof calculated cross section area entering the domain
-                                    FocalLength=self._focal_length,
-                                    elements=self._elements,
-                                    num_elements=self._num_elements,
-                                    element_size=self._original_element_size,
-                                    **kargs)
-        
+    pass
+
 
 class SimulationConditions(babel_integration_focused_array.SimulationConditions):
     '''
@@ -73,3 +55,7 @@ class SimulationConditions(babel_integration_focused_array.SimulationConditions)
 
         self._Tx = generate_focused_array_tx(tx_xyz, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=False, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys="cartesian",show_plot=False)
         self._TxOrig = generate_focused_array_tx(tx_xyz, self._num_elements, self._Frequency, self._OrigFocalLength, self._original_element_size, validate_elements=False, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys="cartesian",show_plot=False)
+
+# Ensures the correct class gets instantiated
+BabelFTD_Simulations._SimConditionsClass = SimulationConditions
+RUN_SIM._BabelFTDSimClass = BabelFTD_Simulations
