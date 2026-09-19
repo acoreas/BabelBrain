@@ -238,6 +238,9 @@ class SimulationConditions(SimulationConditionsBASE):
     '''
     Class implementing the low level interface to prepare the details of the simulation conditions and execute the simulation
     '''
+
+    PPW_SURFACE = 8  # default points-per-wavelength for meshing the tx surface; overrideable by subclasses
+
     def __init__(self,FactorEnlarge = 1.0, #putting a Tx with same F# but just bigger helps to create a more coherent input field for FDTD
                       Aperture=0.0, # m, aperture of the Tx, used tof calculated cross section area entering the domain
                       FocalLength=0.0,
@@ -270,13 +273,15 @@ class SimulationConditions(SimulationConditionsBASE):
 
 
 
-    def GenTransducerGeom(self):
+    def GenTransducerGeom(self,PPWSurface=None):
         # raise NotImplementedError("This method should be implemented in the derived class.")
+        if PPWSurface is None:
+            PPWSurface = self.PPW_SURFACE
         if self._coordinate_system == 'spherical':
             element_positions = np.column_stack((self._elements["r"], np.deg2rad(self._elements["theta"]), np.deg2rad(self._elements["phi"])))
         else:
             element_positions = np.column_stack((self._elements["x"], self._elements["y"], self._elements["z"]))
-        self._Tx = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False)
+        self._Tx = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False,ppw_surface=PPWSurface)
         # self._TxOrig = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._OrigFocalLength, self._original_element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False)
         
     def CalculateRayleighFieldsForward(self,deviceName='6800'):

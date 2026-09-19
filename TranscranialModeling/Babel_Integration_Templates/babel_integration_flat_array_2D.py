@@ -165,6 +165,8 @@ class SimulationConditions(SimulationConditionsBASE):
     Class implementing the low level interface to prepare the details of the simulation conditions and execute the simulation
     """
 
+    PPW_SURFACE = 12.0  # default points-per-wavelength for meshing the tx surface; overrideable by subclasses
+
     def __init__(
         self,
         Aperture=0.0,  # m, aperture of the Tx, used tof calculated cross section area entering the domain
@@ -195,7 +197,9 @@ class SimulationConditions(SimulationConditionsBASE):
         self._Aperture = Aperture
         self._zdistance = -distance_outplane
 
-    def GenTransducerGeom(self, subset_indices=None):
+    def GenTransducerGeom(self, subset_indices=None, PPWSurface=None):
+        if PPWSurface is None:
+            PPWSurface = self.PPW_SURFACE
         element_positions = np.column_stack(
             (self._elements["x"], self._elements["y"], self._elements["z"])
         )
@@ -211,6 +215,7 @@ class SimulationConditions(SimulationConditionsBASE):
             deadspace=self._zdistance,
             rotation_z=self._RotationZ,
             frequency=self._Frequency,
+            ppw_surface=PPWSurface,
         )
 
     def CalculateRayleighFieldsForward(self, deviceName="6800"):

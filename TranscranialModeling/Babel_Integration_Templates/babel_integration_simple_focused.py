@@ -126,6 +126,8 @@ class SimulationConditions(SimulationConditionsBASE):
     Class implementing the low level interface to prepare the details of the simulation conditions and execute the simulation
     """
 
+    PPW_SURFACE = 5  # default points-per-wavelength for meshing the tx surface; overrideable by subclasses
+
     def __init__(
         self,
         FactorEnlarge=1.0,  # putting a Tx with same F# but just bigger helps to create a more coherent input field for FDTD
@@ -144,16 +146,18 @@ class SimulationConditions(SimulationConditionsBASE):
         self._Aperture = Aperture * FactorEnlarge
         self._FocalLength = FocalLength * FactorEnlarge
 
-    def GenTx(self, bOrigDimensions=False):
+    def GenTx(self, bOrigDimensions=False, PPWSurface=None):
         fScaling = 1.0
         if bOrigDimensions:
             fScaling = self._FactorEnlarge
+        if PPWSurface is None:
+            PPWSurface = self.PPW_SURFACE
         TxRC = generate_curved_element(
             self._Frequency,
             self._FocalLength / fScaling,
             self._Aperture / fScaling,
             SpeedofSoundWater(20.0),
-            ppw_surface=5,
+            ppw_surface=PPWSurface,
         )
         TxRC["Aperture"] = self._Aperture / fScaling
         TxRC["center"][:, 2] += self._FocalLength / fScaling

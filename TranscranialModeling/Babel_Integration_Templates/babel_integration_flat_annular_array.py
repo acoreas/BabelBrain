@@ -165,6 +165,8 @@ class SimulationConditions(SimulationConditionsBASE):
     Class implementing the low level interface to prepare the details of the simulation conditions and execute the simulation
     """
 
+    PPW_SURFACE = 8  # default points-per-wavelength for meshing the tx surface; overrideable by subclasses
+
     def __init__(
         self,
         FactorEnlarge=1,  # putting a Tx with same F# but just bigger helps to create a more coherent input field for FDTD
@@ -187,10 +189,12 @@ class SimulationConditions(SimulationConditionsBASE):
         self._OutDiameters = OutDiameters * FactorEnlarge
         self._ZSteering = ZSteering
 
-    def GenTx(self, bOrigDimensions=False):
+    def GenTx(self, bOrigDimensions=False, PPWSurface=None):
         fScaling = 1.0
         if bOrigDimensions:
             fScaling = self._FactorEnlarge
+        if PPWSurface is None:
+            PPWSurface = self.PPW_SURFACE
         print(
             "self._InDiameters, self._OutDiameters,self._FocalLength",
             self._InDiameters / fScaling,
@@ -205,6 +209,7 @@ class SimulationConditions(SimulationConditionsBASE):
             self._InDiameters / fScaling,
             self._OutDiameters / fScaling,
             SpeedofSoundWater(20.0),
+            ppw_surface=PPWSurface,
         )
 
         return TxRC
