@@ -114,8 +114,9 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
                  element_size=0,
                  Aperture=0,
                  FocalLength=0,
+                 coordinate_system='',
                  **kargs):
-        
+
         self._XSteering=XSteering
         self._YSteering=YSteering
         self._ZSteering=ZSteering
@@ -125,6 +126,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
         self._original_element_size=element_size
         self._Aperture=Aperture
         self._focal_length=FocalLength
+        self._coordinate_system=coordinate_system
         super().__init__(**kargs)
 
     def CreateSimConditions(self,**kargs):
@@ -137,6 +139,7 @@ class BabelFTD_Simulations(BabelFTD_Simulations_BASE):
                                     elements=self._elements,
                                     num_elements=self._num_elements,
                                     element_size=self._original_element_size,
+                                    coordinate_system=self._coordinate_system,
                                     **kargs)
 
     def AdjustMechanicalSettings(self,SkullMaskDataOrig,voxelS):
@@ -204,6 +207,7 @@ class SimulationConditions(SimulationConditionsBASE):
                       elements=[],
                       num_elements=0,
                       element_size=0,
+                      coordinate_system='',
                       **kargs):
         super().__init__(Aperture=Aperture*FactorEnlarge,FocalLength=FocalLength*FactorEnlarge,**kargs)
         self._FactorEnlarge=FactorEnlarge
@@ -219,6 +223,7 @@ class SimulationConditions(SimulationConditionsBASE):
         self._num_elements=num_elements
         self._original_element_size=element_size
         self._element_size=element_size*FactorEnlarge
+        self._coordinate_system=coordinate_system
 
     def UpdateConditions(self, SkullMaskNii,AlphaCFL=1.0,bWaterOnly=False,
                          bForceHomogenousMedium=False,
@@ -231,15 +236,18 @@ class SimulationConditions(SimulationConditionsBASE):
         
 
     def GenTransducerGeom(self):
-        element_positions = np.column_stack((self._elements["x"], self._elements["y"], self._elements["z"]))
-        self._Tx = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys="cartesian",show_plot=False,ppw_surface=9)
-        self._TxOrig = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._OrigFocalLength, self._original_element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys="cartesian",show_plot=False,ppw_surface=9)
-        
+        if self._coordinate_system == 'spherical':
+            element_positions = np.column_stack((self._elements["r"], np.deg2rad(self._elements["theta"]), np.deg2rad(self._elements["phi"])))
+        else:
+            element_positions = np.column_stack((self._elements["x"], self._elements["y"], self._elements["z"]))
+        self._Tx = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False,ppw_surface=9)
+        self._TxOrig = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._OrigFocalLength, self._original_element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False,ppw_surface=9)
+
         shift_tx(self._Tx,self._FocalLength)
         shift_tx(self._TxOrig,self._OrigFocalLength)
         
         if self._Frequency == 220e3:
-            self._TxHighRes = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys="cartesian",show_plot=False,ppw_surface=20)
+            self._TxHighRes = generate_focused_array_tx(element_positions, self._num_elements, self._Frequency, self._FocalLength, self._element_size, validate_elements=True, sos=SpeedofSoundWater(20.0),rotation_z=self._RotationZ, coordinate_sys=self._coordinate_system,show_plot=False,ppw_surface=20)
             shift_tx(self._TxHighRes,self._FocalLength)
         else:
             self._TxHighRes=self._TxOrig

@@ -178,6 +178,7 @@ class RunAcousticSim(QObject):
         kargs['ZIntoSkin']=ZIntoSkin
         kargs['ZSteering']=ZSteering
         kargs['Frequencies']=Frequencies
+        kargs['coordinate_system'] = self._mainApp.AcSim.Config.get('coordinate_system','cartesian')
         kargs['Aperture']=self._mainApp.AcSim.Config['TxDiam']
         kargs['FocalLength']=self._mainApp.AcSim.Config['FocalLength']
         kargs['InDiameters']=np.array(self._mainApp.AcSim.Config['InDiameters'])

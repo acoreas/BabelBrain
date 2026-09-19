@@ -436,7 +436,7 @@ def check_angular_distance_tolerance(element_coords,num_elements,focal_length,di
         
         # Calculate angular distances
         if coordinate_sys == "spherical":
-            angular_distances = angular_distance_spherical(selected_element[1],selected_element[2],rest_tx[:,1],rest_tx[:,2])
+            angular_distances = angular_distance_spherical(selected_element[0,1],selected_element[0,2],rest_tx[:,1],rest_tx[:,2])
         elif coordinate_sys == "cartesian":
             angular_distances = angular_distance_cartesian(selected_element,rest_tx,focal_length)
         else:

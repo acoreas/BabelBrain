@@ -471,3 +471,4 @@ elements:
     - 0.046119231
 num_elements: 128
 element_size: 3.5e-3
+coordinate_system: 'cartesian'  # geometry coordinate system for elements: 'cartesian' or 'spherical'

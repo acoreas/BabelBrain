@@ -20,3 +20,4 @@ NaturalOutPlaneDistance: 0.0
 TxDiam: 50e-33
 MaxDistanceToSkin: 50 # mm
 MaxNegativeDistance: 10 # mm
+coordinate_system: 'cartesian'  # geometry coordinate system for elements: 'cartesian' or 'spherical'

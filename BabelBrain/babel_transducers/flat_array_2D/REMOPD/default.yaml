@@ -987,3 +987,4 @@ elements:
   - 0
   - 0
   - 0
+coordinate_system: 'cartesian'  # geometry coordinate system for elements: 'cartesian' or 'spherical'

@@ -548,3 +548,5 @@ PlanTUS: #This information is to interface with the PlanTUS tool - Synthectic
             - 16.2
             - 16.7
             - 17.5
+
+coordinate_system: 'cartesian'  # geometry coordinate system for elements: 'cartesian' or 'spherical'

@@ -505,6 +505,7 @@ class RunAcousticSim(QObject):
         kargs['elements'] = self._mainApp.AcSim.Config['elements']
         kargs['num_elements'] = self._mainApp.AcSim.Config['num_elements']
         kargs['element_size'] = self._mainApp.AcSim.Config['element_size']
+        kargs['coordinate_system'] = self._mainApp.AcSim.Config.get('coordinate_system','cartesian')
         kargs['Aperture'] = self._mainApp.AcSim.Config['TxDiam']
         kargs['FocalLength'] = self._mainApp.AcSim.Config['FocalLength']
         kargs['COMPUTING_BACKEND']=COMPUTING_BACKEND
