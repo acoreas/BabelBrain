@@ -347,6 +347,11 @@ def generate_focused_array_tx(element_coords, num_elements, frequency, focal_len
     # Individual tx element
     tx_element = generate_curved_element(frequency,focal_length,element_diameter,sos,ppw_surface)
     
+    # Convert degrees to radians
+    if coordinate_sys == "spherical":
+        element_coords[:,1] = np.deg2rad(element_coords[:,1]) # theta
+        element_coords[:,2] = np.deg2rad(element_coords[:,2]) # phi
+        
     # Validate element coords
     if validate_elements:
         check_angular_distance_tolerance(element_coords,num_elements,focal_length,element_diameter,coordinate_sys)
