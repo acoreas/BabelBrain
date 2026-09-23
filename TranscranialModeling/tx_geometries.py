@@ -422,7 +422,8 @@ def generate_focused_array_tx(element_coords, num_elements, frequency, focal_len
         focused_array_tx["VertDisplay"][:, 0].max() - focused_array_tx["VertDisplay"][:, 0].min(),
         focused_array_tx["VertDisplay"][:, 1].max() - focused_array_tx["VertDisplay"][:, 1].min(),
     ])
-    print(f"Aperture dimensions (x,y) = {focused_array_tx['Aperture']}")
+    print('Aperture dimensions (x,y) =',focused_array_tx['VertDisplay'][:,0].max()-focused_array_tx['VertDisplay'][:,0].min(),
+                                        focused_array_tx['VertDisplay'][:,1].max()-focused_array_tx['VertDisplay'][:,1].min())
     
     return focused_array_tx
     
