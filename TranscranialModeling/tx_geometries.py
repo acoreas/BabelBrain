@@ -291,11 +291,15 @@ def generate_flat_array_2d_tx(element_coords, num_elements, tx_elem_width, deads
     flat_2d_array_tx["FaceDisplay"] = np.zeros((0, 4), np.int64)
 
     # Rotation matrix for z axis
-    rotation_matrix_z = np.array([
-        [-np.cos(rotation_z), np.sin(rotation_z), 0],
-        [-np.sin(rotation_z), -np.cos(rotation_z), 0],
-        [0, 0, 1],
-    ])
+    if isinstance(rotation_z, np.ndarray) and rotation_z.ndim == 2:
+        rotation_matrix_z = rotation_z
+    else:
+        rotation_z = np.deg2rad(rotation_z)
+        rotation_matrix_z = np.array([
+            [-np.cos(rotation_z), np.sin(rotation_z), 0],
+            [-np.sin(rotation_z), -np.cos(rotation_z), 0],
+            [0, 0, 1],
+        ])
     
     for n in range(element_coords.shape[0]):
 

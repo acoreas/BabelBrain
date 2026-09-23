@@ -93,6 +93,16 @@ class SimulationConditions(babel_integration_flat_array_2D.SimulationConditions)
 
     def GenTransducerGeom(self):
         indices = REMOPD_SUBSETS.get(self._TxSet)  # None when TxSet == 'Total'
+        
+        # REMOPD specific z rotation
+        phi = np.deg2rad(self._RotationZ)
+        rotation_matrix_z = np.array([
+            [np.cos(phi),-np.sin(phi),0],
+            [np.sin(phi), np.cos(phi),0],
+            [0,0,1]
+        ])
+        self._RotationZ = rotation_matrix_z
+        
         return super().GenTransducerGeom(subset_indices=indices)
 
     def CalculateRayleighFieldsForward(self, deviceName="6800"):
