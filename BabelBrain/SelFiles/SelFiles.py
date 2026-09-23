@@ -27,16 +27,7 @@ from TranscranialModeling.babel_integration_templates.babel_integration_helpers 
 #     pyside2-uic form.ui -o ui_form.py
 from .ui_form import Ui_Dialog
 from Utils.paths import resource_path
-
-
-def _load_transducer_list() -> list[dict]:
-    """Load the built-in transducer registry from transducer_list.yaml."""
-    transducer_list_yaml = os.path.join(resource_path(__file__), 'transducer_list.yaml')
-    with open(transducer_list_yaml, 'r') as f:
-        return yaml.safe_load(f)
-
-
-TRANSDUCER_LIST = _load_transducer_list()
+from Utils.transducer_registry import DEFAULT_TRANSDUCERS
 
 
 def show_error_dialog(
@@ -260,12 +251,12 @@ class SelFiles(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
 
     def _PopulateTransducerComboBox(self):
-        """Fill TransducerTypecomboBox from TRANSDUCER_LIST, storing each
+        """Fill TransducerTypecomboBox from DEFAULT_TRANSDUCERS, storing each
         entry's dict as item data so callers can query it via currentData()."""
         combo = self.ui.TransducerTypecomboBox
         combo.blockSignals(True)
         combo.clear()
-        for tx in TRANSDUCER_LIST:
+        for tx in DEFAULT_TRANSDUCERS:
             combo.addItem(tx['name'], tx)
         combo.addItem(CUSTOM_TRANSDUCER_OPTION, None)
         combo.blockSignals(False)

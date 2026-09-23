@@ -28,6 +28,7 @@ from CreateTransducers.transducer_verification_dialog import (
 )
 from RunServerCalculation import RAYLEIGH_TEST, RunServerCalculation
 from Utils.paths import resource_path
+from Utils.transducer_registry import DEFAULT_TRANSDUCER_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,6 @@ class YAMLParameterError(Exception):
 
 COORD_VARS = {'cartesian': ('x', 'y', 'z'), 'spherical': ('r', 'theta', 'phi')}
 CUSTOM_TRANSDUCERS_FOLDER = Path.home() / '.config' / 'BabelBrain' / 'Transducers'
-DEFAULT_TXS = ['ATAC','CTX250','CTX250_2ch','CTX500','DomeTx','DPX500','DPXPC300','H246','H301','H317','I12378','IGT64_500','R15148',
-                  'R15287','R15473','R15646','REMOPD','BSonix','SingleTx']
 TX_GEOMETRIES = {
     "simple_focused": {
         "annular": False,
@@ -517,7 +516,7 @@ class CustomTransducer:
         self.name = tx_name
         self.class_name = get_class_name(self.name)
         
-        if self.class_name in DEFAULT_TXS:
+        if self.class_name in DEFAULT_TRANSDUCER_NAMES:
             raise YAMLParameterError(
                 'You cannot overwrite default transducers, please enter a different name for your transducer',
                 full_key='name'
