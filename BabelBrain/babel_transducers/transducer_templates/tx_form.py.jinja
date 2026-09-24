@@ -16,6 +16,7 @@ The common bottom half is built by TxPanelBase._build_mech_and_actions().
 from GUIComponents.TxPanelBase import (
     TxPanelBase,
     LABEL_BLUE,
+    make_button,
     make_dspin,
     make_combo,
     make_label,
@@ -195,6 +196,24 @@ class {{ tx_name }}Form(TxPanelBase):
             tissue_warning={{ alternative_tissue_warning_value }}
             {% endif %}
         )
+
+        {% if steering_z_name == 'ZSteering' %}
+        # feasible-traj: Sam's SOP — park the array on a Brainsight
+        # feasible pose (mechanical X/Y) and ballpark-steer back to intended.
+        # Shown when TrajectoryType is Brainsight (wired in Babel_REMOPD).
+        self.ApplyFeasibleTraj = make_button(
+            "ApplyFeasibleTraj",
+            "Apply feasible trajectory",
+            bold=True,
+            min_height=40
+        )
+        # Sit right under Calculate Mechanical Adjustments so the three action
+        # buttons stay grouped and the FLHM readout keeps the last row.
+        lay.insertWidget(
+            lay.indexOf(self.CalculateMechAdj) + 1,
+            self.ApplyFeasibleTraj
+        )
+        {% endif %}
 
         return frame
 

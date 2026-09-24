@@ -17,7 +17,7 @@ import sys
 
 import yaml
 
-from .{{ transducer_class_name }}Form import {{ transducer_class_name }}Form
+from .{{ transducer_class_name }}_form import {{ transducer_class_name }}Form
 
 module_directory = Path.cwd() / 'BabelBrain' / 'babel_transducers' / 'transducer_templates'
 sys.path.insert(0, str(module_directory))

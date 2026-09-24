@@ -12,7 +12,7 @@ Custom Transducer Template Version: v{{ template_version }}
 from pathlib import Path
 import sys
 
-module_directory = Path.cwd() / 'TranscranialModeling' / 'babel_integration_templates'
+module_directory = Path.cwd() / 'TranscranialModeling' / 'babel_integration' / 'integration_templates'
 sys.path.insert(0, str(module_directory))
 
 import {{ transducer_integration_template }}

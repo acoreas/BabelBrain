@@ -315,7 +315,7 @@ class SelFiles(QDialog):
             # Loop through each custom transducer and add to list
             tx_folders = [f.name for f in Path(CUSTOM_TRANSDUCERS_FOLDER).iterdir() if f.is_dir()]
             for tx_folder in tx_folders:
-                tx_folder_found = re.search("(?<=Babel_).*", str(tx_folder))
+                tx_folder_found = re.search("(?<=babel_).*", str(tx_folder))
                 if tx_folder_found:
                     tx_name = tx_folder_found[0]
 
