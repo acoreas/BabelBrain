@@ -298,7 +298,7 @@ class SimulationConditions(SimulationConditionsBASE):
             print(
                 "center",
                 center,
-                np.mean(self._TxMechanicalAdjustmentZ["elemcenter"][:, 2]),
+                np.mean(self._Tx["elemcenter"][:, 2]),
             )
 
             u2back = ForwardSimple(
