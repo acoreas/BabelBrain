@@ -680,7 +680,7 @@ class BabelBrain(QWidget):
         ## THIS WILL BE LOADED DYNAMICALLY in function of the active Tx
         import BabelDatasetPreps as DataPreps
 
-        from TranscranialModeling.babel_integration_templates.babel_integration_helpers import GetSmallestSOS
+        from TranscranialModeling.babel_integration.babel_integration_helpers import GetSmallestSOS
         idimport = self.Config['TxModuleName']
         ibsub=idimport
         try:
@@ -690,7 +690,7 @@ class BabelBrain(QWidget):
 
                 WidgetAcSim = importlib.import_module(f"Babel_{idimport}.{self.Config['TxType']}.Babel_{ibsub}").__dict__[ibsub]
             else:
-                WidgetAcSim = importlib.import_module(f"babel_transducers.{self.Config['TxType']}.{idimport}.{idimport}").__dict__[ibsub]
+                WidgetAcSim = importlib.import_module(f"babel_transducers.{self.Config['TxType']}.{idimport}.babel_{idimport}").__dict__[ibsub]
         except ImportError:
             EndWithError("TX system " + self.Config['TxSystem'] + " is not yet supported")
 
