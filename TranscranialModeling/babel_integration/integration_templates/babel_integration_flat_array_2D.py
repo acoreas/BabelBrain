@@ -10,7 +10,7 @@ ABOUT:
 
 import os
 
-from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple
+from BabelViscoFDTD.tools.RayleighAndBHTE import ForwardSimple, SpeedofSoundWater
 import matplotlib.pyplot as plt
 import numpy as np
 from stl import mesh
@@ -216,6 +216,7 @@ class SimulationConditions(SimulationConditionsBASE):
             rotation_z=self._RotationZ,
             frequency=self._Frequency,
             ppw_surface=PPWSurface,
+            sos=SpeedofSoundWater(20.0)
         )
 
     def CalculateRayleighFieldsForward(self, deviceName="6800"):
