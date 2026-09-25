@@ -7,10 +7,37 @@ ABOUT:
      last update   - Sep 30, 2022
 
 '''
+import gc
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from glob import glob
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import nibabel
 import numpy as np
 import numpy.linalg as npl
-import os
+import pandas as pd
+import pymeshfix
+import pyvista as pv
+import trimesh
+import vtk
+import yaml
+from histoprint import print_hist, text_hist
+from linetimer import CodeTimer
+from nibabel import processing
+from nibabel.affines import AffineError, to_matvec
+from nibabel.imageclasses import spatial_axes_first
+from nibabel.nifti1 import Nifti1Image
+from scipy import ndimage
+from scipy.spatial.transform import Rotation as R
+from skimage.measure import label, regionprops
+from trimesh import creation
 
 # Artifact recording (see ArtifactIO.py); no-op unless BABEL_ARTIFACT_LOG is set.
 try:
@@ -18,62 +45,24 @@ try:
 except Exception:
     def _rec_artifact(_p, **_k):
         return _p
-import trimesh
-import nibabel
-from nibabel import processing
-from nibabel.affines import AffineError, to_matvec
-from nibabel.imageclasses import spatial_axes_first
-from nibabel.nifti1 import Nifti1Image
-from scipy import ndimage
-from trimesh import creation 
-import pymeshfix
-from scipy.spatial.transform import Rotation as R
-from skimage.measure import label, regionprops
-import vtk
-import pyvista as pv
-import time
-import gc
-import yaml
-from histoprint import text_hist, print_hist
-import pandas as pd
-import platform
-import sys
-from linetimer import CodeTimer
-import re
-from glob import glob
-from pathlib import Path
-import tempfile
-import subprocess
-
 try:
     import CTZTEProcessing
 except:
     from . import CTZTEProcessing
-
-
 try:
-    from ConvMatTransform import ReadTrajectoryBrainsight, read_itk_affine_transform,itk_to_BSight
+    from ConvMatTransform import (ReadTrajectoryBrainsight, itk_to_BSight,
+                                  read_itk_affine_transform)
 except:
-    from .ConvMatTransform import ReadTrajectoryBrainsight, read_itk_affine_transform,itk_to_BSight
-
+    from .ConvMatTransform import (ReadTrajectoryBrainsight, itk_to_BSight,
+                                   read_itk_affine_transform)
 try:
     from FileManager import FileManager
 except:
     from .FileManager import FileManager
+from Utils.paths import resource_path
 
 _IS_MAC = platform.system() == 'Darwin'
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS)
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 def smooth(inputModel, method='Laplace', iterations=30, laplaceRelaxationFactor=0.5, taubinPassBand=0.1, boundarySmoothing=True):
     """Smoothes surface model using a Laplacian filter or Taubin's non-shrinking algorithm.
@@ -317,14 +306,14 @@ def FixMesh(inmesh):
     return fixmesh
 
 def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
-    scriptbase=os.path.join(resource_path(),"ExternalBin","SimbNIBSMesh")
+    scriptbase = os.path.join(resource_path(__file__), "ExternalBin", "SimbNIBSMesh")
     if sys.platform == 'linux' or _IS_MAC:
         if sys.platform == 'linux':
             shell='bash'
-            path_script = os.path.join(resource_path(),"ExternalBin/SimbNIBSMesh/run_linux.sh")
+            path_script = os.path.join(resource_path(__file__), "ExternalBin/SimbNIBSMesh/run_linux.sh")
         elif _IS_MAC:
             shell='zsh'
-            path_script = os.path.join(resource_path(),"ExternalBin/SimbNIBSMesh/run_mac.sh")
+            path_script = os.path.join(resource_path(__file__), "ExternalBin/SimbNIBSMesh/run_mac.sh")
         
         print("Starting MeshConv")
         result = subprocess.run(
@@ -340,7 +329,7 @@ def RunMeshConv(reference,mesh,finalname,SimbNINBSRoot=''):
         print("stderr:", result.stderr)
         result=result.returncode 
     else:
-        path_script = os.path.join(resource_path(),"ExternalBin","SimbNIBSMesh","run_win.bat")
+        path_script = os.path.join(resource_path(__file__), "ExternalBin", "SimbNIBSMesh", "run_win.bat")
         print('path_script for MeshConv',path_script)
         print("Starting MeshConv")
         result = subprocess.run(

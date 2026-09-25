@@ -70,11 +70,12 @@ from ConvMatTransform import (
     LocaliteTargeting
 )
 from SelFiles.SelFiles import SelFiles,ValidThermalProfile
+from GUIComponents.custom_transducer_dialog import CUSTOM_TRANSDUCER_PREFIX
 
 from Options.Options import AdvancedOptions, OptionalParams, ApplyAdvancedConfig
 from ClockDialog import ClockDialog
 from GUIComponents.nifti_viewer import NiftiViewerWindow
-
+from Utils.paths import resource_path
 from Telemetry.Telemetry import send_telemetry
 from datetime import datetime, timezone
 
@@ -102,17 +103,6 @@ bINUSE_INSIDE_BRAINSIGHT = False
 
 _IS_MAC = platform.system() == 'Darwin'
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS)
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 def get_text_values(initial_texts, parent=None, title="", label=""):
     '''
@@ -421,6 +411,7 @@ class BabelBrain(QWidget):
         CTMapCombo = widget._dfCTParams.iloc[widget.ui.CTMappingcomboBox.currentIndex()].name
         Mat4Trajectory=widget.ui.TrajectorylineEdit.text()
         ThermalProfile=widget.ui.ThermalProfilelineEdit.text()
+        last_custom_tx_yaml= widget.custom_transducer_config
         if widget.ui.SimbNIBSTypecomboBox.currentIndex()==0:
             SimbNIBSType ='charm'
         else:
@@ -458,7 +449,11 @@ class BabelBrain(QWidget):
         # Remote-server details when ComputingBackend==5 (else None); consumed by
         # the client/server offload path (RunServerCalculation).
         self.Config['RemoteServer']=widget.GetSelectedServer() if ComputingBackend==5 else None
-        self.Config['TxSystem']=widget.ui.TransducerTypecomboBox.currentText()
+        
+        self.Config['is_custom_tx'] = widget.ui.TransducerTypecomboBox.currentData()['custom']
+        self.Config['TxSystem']=widget.ui.TransducerTypecomboBox.currentData()['name']
+        self.Config['TxModuleName']=widget.ui.TransducerTypecomboBox.currentData()['module_name']
+        self.Config['TxType'] = widget.ui.TransducerTypecomboBox.currentData()['transducer_type']
 
         self.Config['simbnibs_path']=simbnibs_path
         self.Config['SimbNIBSType']=SimbNIBSType
@@ -466,6 +461,7 @@ class BabelBrain(QWidget):
         self.Config['Mat4Trajectory']=Mat4Trajectory
         self.Config['OrigMat4Trajectory']=Mat4Trajectory
         self.Config['ThermalProfile']=ThermalProfile
+        self.Config['last_custom_tx_yaml']=last_custom_tx_yaml
         self.Config['T1W']=T1W
         self.Config['bUseCT']=bUseCT
         self.Config['CTType']=CTType
@@ -508,7 +504,7 @@ class BabelBrain(QWidget):
 
         
         self.Config['T1WIso'] = self.Config['OutputFilesPath'] + os.sep + re.sub(r'\.nii(\.gz)?$', '', os.path.split(self.Config['T1W'])[1]) + '-isotropic.nii.gz'
-        with open(os.path.join(resource_path(),'version-gui.txt'), 'r') as f:
+        with open(os.path.join(resource_path(__file__),'version-gui.txt'), 'r') as f:
             self.Config['version'] =f.readlines()[0]
         # Which build this is, for non-stable builds only (empty otherwise).
         # Kept separate from ['version'] so anything parsing the version string
@@ -684,36 +680,17 @@ class BabelBrain(QWidget):
         ## THIS WILL BE LOADED DYNAMICALLY in function of the active Tx
         import BabelDatasetPreps as DataPreps
 
-        from TranscranialModeling.BabelIntegrationBASE import GetSmallestSOS
-        if self.Config['TxSystem'] =='CTX_500':
-            idimport = 'CTX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_500':
-            idimport = 'CTX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_250':
-            idimport = 'CTX250'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='CTX_250_2ch':
-            idimport = 'CTX250_2ch'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='DPX_500':
-            idimport = 'DPX500'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='DPXPC_300':
-            idimport = 'DPXPC300'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='Single':
-            idimport = 'SingleTx'
-            ibsub=idimport
-        elif self.Config['TxSystem'] =='BSonix':
-            idimport = 'SingleTx'
-            ibsub='BSonix'
-        else:
-            idimport = self.Config['TxSystem']
-            ibsub=idimport
+        from TranscranialModeling.babel_integration_templates.babel_integration_helpers import GetSmallestSOS
+        idimport = self.Config['TxModuleName']
+        ibsub=idimport
         try:
-            WidgetAcSim = importlib.import_module(f"Babel_{idimport}.Babel_{ibsub}").__dict__[ibsub]
+            if self.Config['is_custom_tx']:
+                module_directory = Path.home() / '.config' / 'BabelBrain' / 'Transducers'
+                sys.path.insert(0, str(module_directory))
+
+                WidgetAcSim = importlib.import_module(f"Babel_{idimport}.{self.Config['TxType']}.Babel_{ibsub}").__dict__[ibsub]
+            else:
+                WidgetAcSim = importlib.import_module(f"babel_transducers.{self.Config['TxType']}.{idimport}.{idimport}").__dict__[ibsub]
         except ImportError:
             EndWithError("TX system " + self.Config['TxSystem'] + " is not yet supported")
 
@@ -2261,6 +2238,8 @@ def main():
         selwidget.ui.T1WlineEdit.setText(prevConfig['T1W'])
         selwidget.ui.TrajectorylineEdit.setText(prevConfig['Mat4Trajectory'])
         selwidget.ui.ThermalProfilelineEdit.setText(prevConfig['ThermalProfile'])
+        if 'last_custom_tx_yaml' in prevConfig:
+            selwidget.custom_transducer_config = prevConfig['last_custom_tx_yaml']
         if 'CT_or_ZTE_input' in prevConfig:
             selwidget.ui.CTlineEdit.setText(prevConfig['CT_or_ZTE_input'])
             selwidget.ui.CTTypecomboBox.setCurrentIndex(prevConfig['CTType'])
@@ -2306,7 +2285,10 @@ def main():
                     selwidget.SelectComputingEngine(GPU=GPU,Backend=Backend)
 
         if 'TxSystem' in prevConfig:
-            selwidget.SelectTxSystem(prevConfig['TxSystem'])
+            if 'is_custom_tx' in prevConfig:
+                selwidget.SelectTxSystem(prevConfig['TxSystem'],prevConfig['is_custom_tx'])
+            else:
+                selwidget.SelectTxSystem(prevConfig['TxSystem'])
         if 'MultiPoint' in prevConfig:
             if prevConfig['EnableMultiPoint']:
                 selwidget.ui.MultiPointTypecomboBox.setCurrentIndex(1)
@@ -2324,7 +2306,7 @@ def main():
         selwidget.ui.TrajectoryTypecomboBox.setCurrentIndex(0)
         AltOutputFilesPath=Brainsight['outputfiles_path']
 
-    icon = QIcon(os.path.join(resource_path(),'Proteus-Alciato-logo.png'))
+    icon = QIcon(os.path.join(resource_path(__file__),'Proteus-Alciato-logo.png'))
     app.setWindowIcon(icon)
 
 

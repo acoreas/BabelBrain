@@ -11,19 +11,34 @@
 from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
     QMetaObject, QObject, QPoint, QRect,
     QSize, QTime, QUrl, Qt)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
-    QFont, QFontDatabase, QGradient, QIcon,
-    QImage, QKeySequence, QLinearGradient, QPainter,
-    QPalette, QPixmap, QRadialGradient, QTransform)
+from PySide6.QtGui import (QAction, QBrush, QColor, QConicalGradient,
+    QCursor, QFont, QFontDatabase, QGradient,
+    QIcon, QImage, QKeySequence, QLinearGradient,
+    QPainter, QPalette, QPixmap, QRadialGradient,
+    QTransform)
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QGroupBox,
-    QLabel, QLineEdit, QPushButton, QSizePolicy,
-    QWidget)
+    QLabel, QLineEdit, QMenu, QPushButton,
+    QSizePolicy, QToolButton, QWidget)
 
 class Ui_Dialog(object):
     def setupUi(self, Dialog):
         if not Dialog.objectName():
             Dialog.setObjectName(u"Dialog")
         Dialog.resize(1025, 431)
+        self.ManageCustomTransducersAction = QAction(Dialog)
+        self.ManageCustomTransducersAction.setObjectName(u"ManageCustomTransducersAction")
+        self.SettingsToolButton = QToolButton(Dialog)
+        self.SettingsToolButton.setObjectName(u"SettingsToolButton")
+        self.SettingsToolButton.setGeometry(QRect(985, 2, 30, 24))
+        self.SettingsToolButton.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.SettingsToolButton.setStyleSheet(u"QToolButton { border: none; font-size: 18px; }\n"
+"QToolButton:hover { background-color: rgba(128, 128, 128, 40); border-radius: 4px; }\n"
+"QToolButton::menu-indicator { image: none; }")
+        self.SettingsToolButton.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.SettingsToolButton.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.SettingsToolButton.setAutoRaise(True)
+        self.SettingsMenu = QMenu(self.SettingsToolButton)
+        self.SettingsMenu.setObjectName(u"SettingsMenu")
         self.ContinuepushButton = QPushButton(Dialog)
         self.ContinuepushButton.setObjectName(u"ContinuepushButton")
         self.ContinuepushButton.setGeometry(QRect(378, 391, 239, 32))
@@ -149,25 +164,6 @@ class Ui_Dialog(object):
         self.groupBox_2.setGeometry(QRect(8, 266, 1010, 117))
         self.groupBox_2.setStyleSheet(u"")
         self.TransducerTypecomboBox = QComboBox(self.groupBox_2)
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
-        self.TransducerTypecomboBox.addItem("")
         self.TransducerTypecomboBox.setObjectName(u"TransducerTypecomboBox")
         self.TransducerTypecomboBox.setGeometry(QRect(90, 30, 116, 30))
         self.TransducerTypecomboBox.setStyleSheet(u"")
@@ -208,6 +204,9 @@ class Ui_Dialog(object):
         self.CancelpushButton.setObjectName(u"CancelpushButton")
         self.CancelpushButton.setGeometry(QRect(945, 392, 74, 32))
 
+        self.SettingsToolButton.addAction(self.SettingsMenu.menuAction())
+        self.SettingsMenu.addAction(self.ManageCustomTransducersAction)
+
         self.retranslateUi(Dialog)
 
         QMetaObject.connectSlotsByName(Dialog)
@@ -215,6 +214,12 @@ class Ui_Dialog(object):
 
     def retranslateUi(self, Dialog):
         Dialog.setWindowTitle(QCoreApplication.translate("Dialog", u"Dialog", None))
+        self.ManageCustomTransducersAction.setText(QCoreApplication.translate("Dialog", u"Manage Custom Transducers", None))
+#if QT_CONFIG(tooltip)
+        self.SettingsToolButton.setToolTip(QCoreApplication.translate("Dialog", u"Settings", None))
+#endif // QT_CONFIG(tooltip)
+        self.SettingsToolButton.setText(QCoreApplication.translate("Dialog", u"\u2699", None))
+        self.SettingsMenu.setTitle("")
         self.ContinuepushButton.setText(QCoreApplication.translate("Dialog", u"CONTINUE", None))
         self.groupBox.setTitle(QCoreApplication.translate("Dialog", u"Imaging input", None))
         self.CoregCTlabel.setText(QCoreApplication.translate("Dialog", u"Correg.?", None))
@@ -252,26 +257,6 @@ class Ui_Dialog(object):
         self.label_5.setText(QCoreApplication.translate("Dialog", u"Trajectory type", None))
         self.label_6.setText(QCoreApplication.translate("Dialog", u"SimNIBS type", None))
         self.groupBox_2.setTitle(QCoreApplication.translate("Dialog", u"Transducer and Computing engine", None))
-        self.TransducerTypecomboBox.setItemText(0, QCoreApplication.translate("Dialog", u"Single", None))
-        self.TransducerTypecomboBox.setItemText(1, QCoreApplication.translate("Dialog", u"CTX_500", None))
-        self.TransducerTypecomboBox.setItemText(2, QCoreApplication.translate("Dialog", u"CTX_250", None))
-        self.TransducerTypecomboBox.setItemText(3, QCoreApplication.translate("Dialog", u"CTX_250_2ch", None))
-        self.TransducerTypecomboBox.setItemText(4, QCoreApplication.translate("Dialog", u"DPX_500", None))
-        self.TransducerTypecomboBox.setItemText(5, QCoreApplication.translate("Dialog", u"DPXPC_300", None))
-        self.TransducerTypecomboBox.setItemText(6, QCoreApplication.translate("Dialog", u"H317", None))
-        self.TransducerTypecomboBox.setItemText(7, QCoreApplication.translate("Dialog", u"H246", None))
-        self.TransducerTypecomboBox.setItemText(8, QCoreApplication.translate("Dialog", u"BSonix", None))
-        self.TransducerTypecomboBox.setItemText(9, QCoreApplication.translate("Dialog", u"REMOPD", None))
-        self.TransducerTypecomboBox.setItemText(10, QCoreApplication.translate("Dialog", u"I12378", None))
-        self.TransducerTypecomboBox.setItemText(11, QCoreApplication.translate("Dialog", u"ATAC", None))
-        self.TransducerTypecomboBox.setItemText(12, QCoreApplication.translate("Dialog", u"R15148", None))
-        self.TransducerTypecomboBox.setItemText(13, QCoreApplication.translate("Dialog", u"R15287", None))
-        self.TransducerTypecomboBox.setItemText(14, QCoreApplication.translate("Dialog", u"R15473", None))
-        self.TransducerTypecomboBox.setItemText(15, QCoreApplication.translate("Dialog", u"R15646", None))
-        self.TransducerTypecomboBox.setItemText(16, QCoreApplication.translate("Dialog", u"IGT64_500", None))
-        self.TransducerTypecomboBox.setItemText(17, QCoreApplication.translate("Dialog", u"H301", None))
-        self.TransducerTypecomboBox.setItemText(18, QCoreApplication.translate("Dialog", u"DomeTx", None))
-
         self.label_2.setText(QCoreApplication.translate("Dialog", u"Transducer", None))
         self.label_3.setText(QCoreApplication.translate("Dialog", u"Computing backend", None))
         self.MultiPointTypecomboBox.setItemText(0, QCoreApplication.translate("Dialog", u"NO", None))

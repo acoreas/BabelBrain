@@ -1,25 +1,14 @@
 import logging
-logger = logging.getLogger()
 import os
-from pathlib import Path
 import platform
-import sys
+
+from Utils.paths import resource_path
 
 _IS_MAC = platform.system() == 'Darwin'
 GIB = 1024**3
 MIB = GIB/1024
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
-
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = Path(sys._MEIPASS)
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
+logger = logging.getLogger()
 
 def get_default_step(gpu_device, GPUBackend):
     import pyopencl as pocl
@@ -170,7 +159,7 @@ def InitCUDA(preamble=None,kernel_files=None,DeviceName='A6000',build_later=Fals
     if build_later:
         prgcl = complete_kernel
     else:
-        resource_path_str = str(resource_path())
+        resource_path_str = str(resource_path(__file__))
         options = ('-I', resource_path_str)
         logging.info(f"Searching {resource_path_str} for cuda headers")
 

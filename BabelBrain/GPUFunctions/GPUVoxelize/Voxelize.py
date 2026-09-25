@@ -1,31 +1,21 @@
 import logging
-logger = logging.getLogger()
 import os
-from pathlib import Path
 import platform
-import sys
 
-from numba import jit,njit, prange
 import numpy as np
+from numba import njit, prange
 
 try:
-    from GPUUtils import InitCUDA,InitOpenCL,InitMetal,InitMLX,get_step_size
+    from GPUUtils import (InitCUDA, InitMetal, InitMLX, InitOpenCL,
+                          get_step_size)
 except:
-    from ..GPUUtils import InitCUDA,InitOpenCL,InitMetal,InitMLX,get_step_size
+    from ..GPUUtils import (InitCUDA, InitMetal, InitMLX, InitOpenCL,
+                            get_step_size)
+from Utils.paths import resource_path
 
-_IS_MAC = platform.system() == 'Darwin'
 
-def resource_path():  # needed for bundling
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if not _IS_MAC:
-        return os.path.split(Path(__file__))[0]
+logger = logging.getLogger()
 
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir =  os.path.abspath(os.path.join(os.path.dirname(__file__)))
-    else:
-        bundle_dir = Path(__file__).parent
-
-    return bundle_dir
 
 @njit
 def checkVoxelInd(location, vtable):
@@ -55,7 +45,7 @@ def InitVoxelize(DeviceName='A6000',GPUBackend='OpenCL'):
     global clp
     global sel_device_name
 
-    kernel_files = [os.path.join(resource_path(),'voxelize.cpp')]
+    kernel_files = [os.path.join(resource_path(__file__), 'voxelize.cpp')]
 
     sel_device_name = DeviceName
 
@@ -126,7 +116,7 @@ def Voxelize(inputMesh,targetResolution=1333/500e3/6*0.75*1e3,GPUBackend='OpenCL
         with ctx:
             constant_defs = constant_defs.replace('constant','__constant__')
             
-            resource_path_str = str(resource_path())
+            resource_path_str = str(resource_path(__file__))
             options = ('-I', resource_path_str)
             logging.info(f"Searching {resource_path_str} for cuda headers")
 
