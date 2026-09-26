@@ -45,7 +45,10 @@ class REMOPD(flat_array_2D_tx.FlatArray2DTx):
         self.Widget.LabelTissueRemoved.setVisible(False)
         self.Widget.CalculateMechAdj.clicked.connect(self.CalculateMechAdj)
         self.Widget.CalculateMechAdj.setEnabled(False)
-        self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        if self._MainApp.Config['TrajectoryType']!='localite':
+            self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        else:
+            self.Widget.ApplyFeasibleTraj.setVisible(False)
 
     def _CreateAcousticWorker(self):
         return RunAcousticSim(self._MainApp)

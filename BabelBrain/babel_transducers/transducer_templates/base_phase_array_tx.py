@@ -25,6 +25,7 @@ class BabelBasePhaseArray(BabelBaseTx):
         self._MultiPoint = None #if None, the default is to run one single focal point
 
     def _WirePanel(self):
+        print('BabelBasePhaseArray wire panel')
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
 
         for spinbox,ID in zip([self.Widget.XSteeringSpinBox,
@@ -55,7 +56,10 @@ class BabelBasePhaseArray(BabelBaseTx):
             self.Widget.ZMechaniclabel.setVisible(False)
         self.Widget.CalculateMechAdj.clicked.connect(self.CalculateMechAdj)
         self.Widget.CalculateMechAdj.setEnabled(False)
-        self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        if self._MainApp.Config['TrajectoryType']!='localite':
+            self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        else:
+            self.Widget.ApplyFeasibleTraj.setVisible(False)
 
 
     def  mechanical_xy_from_feasible_ras_mm(self, ras_mm):
