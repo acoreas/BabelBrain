@@ -19,6 +19,7 @@ class FlatArray2DTx(BabelBasePhaseArray):
         super().__init__(parent,MainApp,tx_config_file,step_2_form)
 
     def _WirePanel(self):
+        print('FlatArray2DTx wire panel')
         self.Widget.IsppaScrollBars = WidgetScrollBars(parent=self.Widget.IsppaScrollBars,MainApp=self)
 
         self.Widget.XSteeringSpinBox.setMinimum(self.Config['MinimalXSteering']*1e3)
@@ -39,7 +40,10 @@ class FlatArray2DTx(BabelBasePhaseArray):
         self.Widget.LabelTissueRemoved.setVisible(False)
         self.Widget.CalculateMechAdj.clicked.connect(self.CalculateMechAdj)
         self.Widget.CalculateMechAdj.setEnabled(False)
-        self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        if self._MainApp.Config['TrajectoryType']!='localite':
+            self.Widget.ApplyFeasibleTraj.clicked.connect(self.ApplyFeasibleTrajectory)
+        else:
+            self.Widget.ApplyFeasibleTraj.setVisible(False)
         self.Widget.MultifocusLabel.setVisible(False)
         self.Widget.SelCombinationDropDown.setVisible(False)
         while self.Widget.SelCombinationDropDown.count()>0:
