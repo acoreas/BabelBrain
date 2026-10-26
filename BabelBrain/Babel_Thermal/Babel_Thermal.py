@@ -1313,7 +1313,10 @@ class Babel_Thermal(QWidget):
         if not self._IsMergedTab():
             DataToExport = DataToExport | self._CaptureFromAcSim(self._MainApp.AcSim.GetExport)
         else:
-            DataToExport = DataToExport | {'SDR':self._MainApp.AcSim._acPanels[self._TrajectoryNumber]['SDR']}
+            # SDR is only in the merged results when the transducer reports one (as in GetExport)
+            MergedAcPanel=self._MainApp.AcSim._acPanels[self._TrajectoryNumber]
+            if 'SDR' in MergedAcPanel:
+                DataToExport = DataToExport | {'SDR':MergedAcPanel['SDR']}
         DataToExport['AdjustRAS']=self.Widget.tableWidget.item(4,1).data(QtCore.Qt.UserRole)
         
         pd.DataFrame.from_dict(data=DataToExport, orient='index').to_csv(outCSV, header=False)
